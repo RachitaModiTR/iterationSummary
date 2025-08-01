@@ -1,0 +1,32 @@
+{
+  "2025_S15_Jul16-Jul29_ADGE-Prep": {
+    "total_work_items": 7,
+    "total_story_points": 32,
+    "completed_work_items": 7,
+    "completed_story_points": 32,
+    "last_updated": "2025-08-01T15:06:59.477927",
+    "sprint": "2025_S15_Jul16-Jul29",
+    "team": "ADGE-Prep",
+    "pod": null
+  },
+  "2025_S15_Jul16-Jul29_reviewready-agentic-ai-workflow_Pod 1": {
+    "total_work_items": 6,
+    "total_story_points": 24,
+    "completed_work_items": 6,
+    "completed_story_points": 24,
+    "last_updated": "2025-08-01T15:06:59.479758",
+    "sprint": "2025_S15_Jul16-Jul29",
+    "team": "reviewready-agentic-ai-workflow",
+    "pod": "Pod 1"
+  },
+  "2025_S16_Jul30-Aug12_ADGE-Prep": {
+    "total_work_items": 35,
+    "total_story_points": 70,
+    "completed_work_items": 6,
+    "completed_story_points": 8,
+    "last_updated": "2025-08-01T15:18:42.432550",
+    "sprint": "2025_S16_Jul30-Aug12",
+    "team": "ADGE-Prep",
+    "pod": null
+  }
+}

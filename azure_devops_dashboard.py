@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import os
 from config import AZURE_DEVOPS_CONFIG, COMPLETED_STATES, WORK_ITEM_TYPES, SPRINT_CONFIG
 from azure_data_monitor import AzureDataMonitor, start_monitoring, stop_monitoring
+from email_notifier import SprintChangeNotifier
 import threading
 
 # Page configuration
@@ -569,7 +570,7 @@ def main():
             help="Select the pod to analyze"
         )
     
-    # Fetch data button - moved below both fields
+    # Fetch data button - moved above email notifications
     if st.sidebar.button("🔄 Fetch Data", type="primary"):
         if not pat_token:
             st.sidebar.error("Please enter your PAT token first!")
@@ -581,6 +582,97 @@ def main():
                     st.session_state['work_items'] = dashboard.work_items
                     st.session_state['selected_team'] = selected_team  # Store selected team
                     st.success(f"Successfully fetched {len(dashboard.work_items)} work items for {selected_team}!")
+                    
+                    # Check for changes and send notifications if enabled (after data fetch)
+                    if 'enable_notifications' in locals() and enable_notifications and 'sender_email' in locals() and 'sender_password' in locals() and sender_email and sender_password:
+                        with st.spinner("Checking for changes and sending notifications..."):
+                            notifier = SprintChangeNotifier()
+                            notification_result = notifier.monitor_and_notify(
+                                current_data=dashboard.work_items,
+                                sprint=selected_sprint,
+                                team=selected_team,
+                                pod=selected_pod,
+                                sender_email=sender_email,
+                                sender_password=sender_password
+                            )
+                            
+                            if notification_result['changes_detected']:
+                                if notification_result['email_sent']:
+                                    st.success(f"📧 Email notification sent to rachita.modi@tr.com")
+                                    st.info(f"Changes detected: {', '.join(notification_result['changes'].keys())}")
+                                else:
+                                    st.warning(f"⚠️ Changes detected but email failed: {notification_result['email_status']}")
+                            else:
+                                st.info("ℹ️ No changes detected since last check")
+                    
+                else:
+                    st.error("Failed to fetch data. Please check your PAT token and configuration.")
+    
+    # Email notification settings
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📧 Email Notifications")
+    
+    enable_notifications = st.sidebar.checkbox(
+        "Enable change notifications",
+        value=False,
+        help="Send email alerts when work items or story points change"
+    )
+    
+    sender_email = None
+    sender_password = None
+    
+    if enable_notifications:
+        sender_email = st.sidebar.text_input(
+            "Sender Email:",
+            placeholder="your-email@gmail.com",
+            help="Gmail address to send notifications from"
+        )
+        sender_password = st.sidebar.text_input(
+            "App Password:",
+            type="password",
+            help="Gmail app password (not your regular password)"
+        )
+        
+        if sender_email and sender_password:
+            st.sidebar.success("✅ Email notifications configured")
+        else:
+            st.sidebar.warning("⚠️ Email credentials required for notifications")
+    
+    # Note: Fetch data button moved above - email notifications are checked during data fetch
+    if False:  # Placeholder to maintain code structure
+        if not pat_token:
+            st.sidebar.error("Please enter your PAT token first!")
+        else:
+            with st.spinner(f"Fetching data from Azure DevOps for {selected_team}..."):
+                raw_data = dashboard.get_azure_devops_data(pat_token, selected_team, selected_pod, selected_sprint)
+                if raw_data:
+                    dashboard.work_items = dashboard.process_work_items(raw_data)
+                    st.session_state['work_items'] = dashboard.work_items
+                    st.session_state['selected_team'] = selected_team  # Store selected team
+                    st.success(f"Successfully fetched {len(dashboard.work_items)} work items for {selected_team}!")
+                    
+                    # Check for changes and send notifications if enabled
+                    if enable_notifications and sender_email and sender_password:
+                        with st.spinner("Checking for changes and sending notifications..."):
+                            notifier = SprintChangeNotifier()
+                            notification_result = notifier.monitor_and_notify(
+                                current_data=dashboard.work_items,
+                                sprint=selected_sprint,
+                                team=selected_team,
+                                pod=selected_pod,
+                                sender_email=sender_email,
+                                sender_password=sender_password
+                            )
+                            
+                            if notification_result['changes_detected']:
+                                if notification_result['email_sent']:
+                                    st.success(f"📧 Email notification sent to rachita.modi@tr.com")
+                                    st.info(f"Changes detected: {', '.join(notification_result['changes'].keys())}")
+                                else:
+                                    st.warning(f"⚠️ Changes detected but email failed: {notification_result['email_status']}")
+                            else:
+                                st.info("ℹ️ No changes detected since last check")
+                    
                 else:
                     st.error("Failed to fetch data. Please check your PAT token and configuration.")
     
@@ -717,7 +809,7 @@ def render_overview_tab(df, completed_df):
     # 2. Key metrics - second
     st.subheader("📊 Key Metrics")
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric(
@@ -727,20 +819,29 @@ def render_overview_tab(df, completed_df):
         )
     
     with col2:
+        # Calculate total story points targeted for the sprint (all items in scope)
+        total_targeted_points = df['story_points'].sum()
+        st.metric(
+            "Total Story Points Targeted",
+            int(total_targeted_points),
+            delta=f"{len(df)} items in scope"
+        )
+    
+    with col3:
         st.metric(
             "Completion Rate",
             f"{completion_rate:.1f}%",
             delta=f"{len(df) - len(completed_df)} remaining"
         )
     
-    with col3:
+    with col4:
         st.metric(
             "Story Points Delivered",
             int(total_points),
             delta=f"Avg: {total_points/len(completed_df):.1f}" if len(completed_df) > 0 else "0"
         )
     
-    with col4:
+    with col5:
         st.metric(
             "Avg Cycle Time",
             f"{avg_cycle_time:.1f} days",
