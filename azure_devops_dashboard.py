@@ -35,10 +35,43 @@ st.set_page_config(
 # Enhanced CSS for beautiful, professional dashboard styling
 st.markdown("""
 <style>
+    /* Remove default padding and margins for full width */
+    .main .block-container {
+        padding-top: 1rem;
+        padding-left: 1rem;
+        padding-right: 1rem;
+        padding-bottom: 1rem;
+        max-width: none;
+    }
+    
     /* Global Styles */
     .main > div {
         padding-top: 1rem;
         font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        max-width: none;
+    }
+    
+    /* Remove sidebar padding when collapsed */
+    .css-1d391kg {
+        padding-top: 1rem;
+    }
+    
+    /* Full width container */
+    .stApp > div {
+        max-width: none;
+    }
+    
+    /* Remove default streamlit padding */
+    .css-18e3th9 {
+        padding-top: 0;
+        padding-bottom: 0;
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    
+    /* Ensure full width for main content */
+    .css-1d391kg, .css-1lcbmhc {
+        max-width: none;
     }
     
     /* Header Styling */
