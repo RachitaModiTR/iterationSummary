@@ -1,0 +1,43 @@
+REQUIRED FILES FOR STREAMLIT CLOUD DEPLOYMENT
+==============================================
+
+ESSENTIAL FILES (Must Have):
+1. streamlit_app.py
+2. azure_devops_dashboard.py
+3. config.py
+4. requirements.txt
+5. .streamlit/config.toml
+
+SUPPORTING FILES (Recommended):
+6. email_notifier.py
+7. azure_data_monitor.py
+8. .gitignore
+
+DEPLOYMENT STEPS:
+================
+
+1. CREATE GITHUB REPOSITORY
+   - Go to github.com
+   - Create new repository
+   - Upload the 8 files listed above
+
+2. DEPLOY ON STREAMLIT CLOUD
+   - Go to https://share.streamlit.io
+   - Sign in with GitHub
+   - Click "New app"
+   - Select your repository
+   - Set main file: streamlit_app.py
+   - Click "Deploy!"
+
+3. FIRST TIME SETUP
+   - Enter Azure DevOps PAT token in sidebar
+   - Select team and sprint
+   - Click "Fetch Data"
+   - Explore all 8 dashboard tabs
+
+THAT'S IT! Your app will be live at:
+https://your-app-name.streamlit.app
+
+For detailed instructions, see:
+- STREAMLIT_DEPLOYMENT_GUIDE.md
+- STREAMLIT_DEPLOYMENT_CHECKLIST.md

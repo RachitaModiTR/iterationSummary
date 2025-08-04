@@ -581,6 +581,7 @@ def main():
                     dashboard.work_items = dashboard.process_work_items(raw_data)
                     st.session_state['work_items'] = dashboard.work_items
                     st.session_state['selected_team'] = selected_team  # Store selected team
+                    st.session_state['selected_sprint'] = selected_sprint  # Store selected sprint
                     st.success(f"Successfully fetched {len(dashboard.work_items)} work items for {selected_team}!")
                     
                     # Check for changes and send notifications if enabled (after data fetch)
@@ -730,8 +731,8 @@ def main():
         "📋 Work Categories", 
         "📈 Charts", 
         "🔍 Detailed View",
-        "👁️ Data Monitor",
-        "🔄 Recent Changes"
+        "🔄 Recent Changes",
+        "🤖 AI Assistant"
     ])
     
     with tab1:
@@ -753,10 +754,10 @@ def main():
         render_detailed_view_tab(df)
     
     with tab7:
-        render_data_monitor_tab()
+        render_recent_changes_tab(df, pat_token)
     
     with tab8:
-        render_recent_changes_tab(df, pat_token)
+        render_ai_assistant_tab(df, completed_df)
 
 def render_overview_tab(df, completed_df):
     """Render the overview tab"""
@@ -852,8 +853,9 @@ def render_overview_tab(df, completed_df):
     st.subheader("⚙️ Sprint Configuration")
     col1, col2 = st.columns(2)
     
-    # Get the current team and calculate area path dynamically
+    # Get the current team and selected sprint dynamically
     current_team = st.session_state.get('selected_team', 'ADGE-Prep')
+    current_sprint = st.session_state.get('selected_sprint', '2025_S15_Jul16-Jul29')
     
     # Calculate area path based on selected team (same logic as in data fetching)
     if current_team.startswith("ADGE-"):
@@ -864,6 +866,9 @@ def render_overview_tab(df, completed_df):
     else:
         calculated_area_path = current_team
     
+    # Calculate dynamic iteration path based on selected sprint
+    dynamic_iteration_path = f"TaxProf\\2025\\Q3\\{current_sprint}"
+    
     with col1:
         st.info(f"""
         **Organization:** {AZURE_DEVOPS_CONFIG['organization']}  
@@ -873,20 +878,31 @@ def render_overview_tab(df, completed_df):
     
     with col2:
         st.info(f"""
-        **Iteration:** {SPRINT_CONFIG['iteration_path']}  
+        **Iteration:** {dynamic_iteration_path}  
         **Area Path:** {calculated_area_path}  
         **Work Item Types:** {', '.join(WORK_ITEM_TYPES)}
         """)
     
     # 4. Sprint Summary - fourth (matching Sprint_Summary_Markdown.md format exactly)
     
-    # Get current team for dynamic summary
+    # Get current team and sprint for dynamic summary
     current_team = st.session_state.get('selected_team', 'ADGE-Prep')
+    current_sprint = st.session_state.get('selected_sprint', '2025_S15_Jul16-Jul29')
+    
+    # Map sprint to human-readable dates
+    sprint_date_mapping = {
+        "2025_S14_Jul02-Jul15": "July 2-15, 2025",
+        "2025_S15_Jul16-Jul29": "July 16-29, 2025",
+        "2025_S16_Jul30-Aug12": "July 30 - August 12, 2025",
+        "2025_S17_Aug13-Aug26": "August 13-26, 2025"
+    }
+    
+    sprint_period = sprint_date_mapping.get(current_sprint, "Unknown Sprint Period")
     
     # Sprint Overview Section (exact format from markdown)
     st.markdown("## 📊 Sprint Overview")
     st.markdown(f"""
-- **Sprint Period**: July 16-29, 2025
+- **Sprint Period**: {sprint_period}
 - **Team**: {current_team}
 - **Completion Rate**: {completion_rate:.1f}% ({len(completed_df)} of {len(df)} items)
 - **Story Points Delivered**: {int(total_points)} points
@@ -1481,12 +1497,19 @@ def render_charts_tab(df, completed_df):
     # Story points distribution
     st.subheader("Story Points Distribution")
     story_points_dist = completed_df[completed_df['story_points'] > 0]['story_points'].value_counts().sort_index()
+    
+    # Create DataFrame for plotly
+    points_dist_df = pd.DataFrame({
+        'Story Points': story_points_dist.index,
+        'Number of Items': story_points_dist.values
+    })
+    
     fig_points_dist = px.bar(
-        x=story_points_dist.index,
-        y=story_points_dist.values,
+        points_dist_df,
+        x='Story Points',
+        y='Number of Items',
         title="Distribution of Story Points",
-        labels={'x': 'Story Points', 'y': 'Number of Items'},
-        color=story_points_dist.values,
+        color='Number of Items',
         color_continuous_scale=PASTEL_COLORS['success']
     )
     fig_points_dist.update_layout(
@@ -2344,7 +2367,1043 @@ def analyze_work_item_changes(revision_history):
         'detailed_changes': detailed_changes[-10:]  # Keep last 10 changes
     }
 
-def render_data_monitor_tab():
+def render_ai_assistant_tab(df, completed_df):
+    """Render the AI Assistant chatbot tab with modern chat interface matching dashboard UI"""
+    
+    if df.empty:
+        st.warning("No work items data available. Please fetch data first to enable AI assistance.")
+        return
+    
+    # Initialize chat history in session state
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
+    
+    # Create modern chat interface matching the dashboard style
+    st.markdown("""
+    <style>
+    /* Chat Interface Styles matching dashboard UI */
+    .chat-widget {
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        overflow: hidden;
+        margin: 1rem 0;
+        border: 1px solid #e9ecef;
+        max-width: 800px;
+        margin: 2rem auto;
+    }
+    
+    .chat-header {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        color: white;
+        padding: 1.5rem 2rem;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        font-weight: 600;
+        font-size: 1.2rem;
+    }
+    
+    .chat-header-icon {
+        width: 40px;
+        height: 40px;
+        background: rgba(255,255,255,0.2);
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.5rem;
+    }
+    
+    .chat-messages {
+        padding: 2rem;
+        min-height: 400px;
+        max-height: 500px;
+        overflow-y: auto;
+        background: #f8f9fa;
+    }
+    
+    .bot-message {
+        background: #f1f3f4;
+        padding: 1rem 1.5rem;
+        border-radius: 18px 18px 18px 4px;
+        margin: 1rem 0;
+        max-width: 85%;
+        position: relative;
+        color: #2d3436;
+        line-height: 1.5;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .bot-message::before {
+        content: "🤖";
+        position: absolute;
+        left: -2.5rem;
+        top: 0.5rem;
+        width: 2rem;
+        height: 2rem;
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        color: white;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        box-shadow: 0 2px 8px rgba(231, 76, 60, 0.3);
+    }
+    
+    .user-message {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 1rem 1.5rem;
+        border-radius: 18px 18px 4px 18px;
+        margin: 1rem 0 1rem auto;
+        max-width: 85%;
+        margin-left: auto;
+        position: relative;
+        line-height: 1.5;
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    }
+    
+    .user-message::after {
+        content: "👤";
+        position: absolute;
+        right: -2.5rem;
+        top: 0.5rem;
+        width: 2rem;
+        height: 2rem;
+        background: white;
+        color: #2d3436;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    
+    .welcome-message {
+        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        padding: 2rem;
+        border-radius: 15px;
+        margin: 1rem 0;
+        color: #2d3436;
+        border-left: 4px solid #4ecdc4;
+        box-shadow: 0 4px 16px rgba(168, 237, 234, 0.3);
+    }
+    
+    .quick-actions {
+        padding: 1.5rem 2rem;
+        background: white;
+        border-top: 1px solid #e9ecef;
+    }
+    
+    .quick-action-btn {
+        background: white;
+        border: 2px solid #e74c3c;
+        color: #e74c3c;
+        padding: 0.75rem 1.5rem;
+        border-radius: 25px;
+        margin: 0.5rem;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        font-weight: 500;
+        display: inline-block;
+    }
+    
+    .quick-action-btn:hover {
+        background: #e74c3c;
+        color: white;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+    }
+    
+    .chat-input-area {
+        padding: 1.5rem 2rem;
+        background: white;
+        border-top: 1px solid #e9ecef;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+    }
+    
+    .chat-input {
+        flex: 1;
+        padding: 1rem 1.5rem;
+        border: 1px solid #ddd;
+        border-radius: 25px;
+        font-size: 1rem;
+        outline: none;
+        transition: border-color 0.2s ease;
+    }
+    
+    .chat-input:focus {
+        border-color: #e74c3c;
+        box-shadow: 0 0 0 3px rgba(231, 76, 60, 0.1);
+    }
+    
+    .chat-send-btn {
+        background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        color: white;
+        border: none;
+        padding: 1rem 1.5rem;
+        border-radius: 25px;
+        cursor: pointer;
+        font-weight: 600;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+    
+    .chat-send-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(231, 76, 60, 0.3);
+    }
+    
+    .typing-indicator {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        color: #666;
+        font-style: italic;
+        margin: 1rem 0;
+    }
+    
+    .typing-dots {
+        display: flex;
+        gap: 0.25rem;
+    }
+    
+    .typing-dot {
+        width: 8px;
+        height: 8px;
+        background: #e74c3c;
+        border-radius: 50%;
+        animation: typing 1.4s infinite ease-in-out;
+    }
+    
+    .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+    
+    @keyframes typing {
+        0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+        40% { transform: scale(1); opacity: 1; }
+    }
+    
+    /* Scrollbar styling */
+    .chat-messages::-webkit-scrollbar {
+        width: 6px;
+    }
+    
+    .chat-messages::-webkit-scrollbar-track {
+        background: #f1f1f1;
+        border-radius: 3px;
+    }
+    
+    .chat-messages::-webkit-scrollbar-thumb {
+        background: #e74c3c;
+        border-radius: 3px;
+    }
+    
+    .chat-messages::-webkit-scrollbar-thumb:hover {
+        background: #c0392b;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Initialize chat history if empty
+    if not st.session_state.chat_history:
+        welcome_msg = """👋 **Welcome back! What can we help you with?**
+
+I'm your AI Sprint Assistant, ready to analyze your team's performance and provide insights on:
+
+• **Sprint Progress** - Completion rates, velocity, and timeline analysis
+• **Team Performance** - Top performers, workload distribution, and efficiency  
+• **Work Analysis** - Category breakdowns, cycle times, and complexity
+• **Issue Detection** - Potential blockers, risks, and recommendations
+• **Goal Tracking** - Sprint objectives and target achievement
+
+What would you like to know about your sprint?"""
+        
+        st.session_state.chat_history.append(("system", welcome_msg))
+    
+    # Create the chat widget
+    st.markdown('<div class="chat-widget">', unsafe_allow_html=True)
+    
+    # Chat header
+    st.markdown('''
+    <div class="chat-header">
+        <div class="chat-header-icon">🤖</div>
+        <div>AI Sprint Assistant</div>
+    </div>
+    ''', unsafe_allow_html=True)
+    
+    # Chat messages area
+    st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
+    
+    # Display chat history
+    for message_type, content in st.session_state.chat_history:
+        if message_type == "system":
+            st.markdown(f'<div class="welcome-message">{content}</div>', unsafe_allow_html=True)
+        elif message_type == "user":
+            st.markdown(f'<div class="user-message">{content}</div>', unsafe_allow_html=True)
+        elif message_type == "ai":
+            st.markdown(f'<div class="bot-message">{content}</div>', unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Quick actions section
+    st.markdown('<div class="quick-actions">', unsafe_allow_html=True)
+    
+    # Create quick action buttons
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📊 Sprint Overview", key="qa_overview"):
+            question = "Give me a comprehensive sprint overview with key metrics"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    with col2:
+        if st.button("🏆 Top Performers", key="qa_performers"):
+            question = "Who are the top performers this sprint and why?"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    with col3:
+        if st.button("⚠️ Issues & Blockers", key="qa_issues"):
+            question = "What potential issues or blockers should I be aware of?"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    # Second row of quick actions
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("⏱️ Cycle Time Analysis", key="qa_cycle"):
+            question = "Analyze our cycle times and identify improvement areas"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    with col2:
+        if st.button("📋 Work Categories", key="qa_categories"):
+            question = "Break down our work by categories and types"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    with col3:
+        if st.button("🚀 Team Velocity", key="qa_velocity"):
+            question = "What's our team velocity and how does it compare?"
+            st.session_state.chat_history.append(("user", question))
+            ai_response = process_ai_question(question, df, completed_df)
+            st.session_state.chat_history.append(("ai", ai_response))
+            st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Chat input area
+    st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
+    
+    # Input form
+    with st.form(key="chat_form", clear_on_submit=True):
+        col1, col2 = st.columns([5, 1])
+        
+        with col1:
+            user_input = st.text_input(
+                "Reply to AI Sprint Assistant",
+                placeholder="Ask me anything about your sprint data...",
+                label_visibility="collapsed"
+            )
+        
+        with col2:
+            send_button = st.form_submit_button("Send", use_container_width=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Process user input
+    if send_button and user_input.strip():
+        # Add user message to chat
+        st.session_state.chat_history.append(("user", user_input))
+        
+        # Generate AI response
+        with st.spinner("🤖 AI is analyzing your data..."):
+            ai_response = process_ai_question(user_input, df, completed_df)
+        
+        # Add AI response to chat
+        st.session_state.chat_history.append(("ai", ai_response))
+        
+        # Rerun to show new messages
+        st.rerun()
+    
+    # Chat management
+    st.markdown("---")
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.markdown("**💬 Chat Management**")
+    
+    with col2:
+        if st.session_state.chat_history and len(st.session_state.chat_history) > 1:
+            if st.button("🗑️ Clear Chat", use_container_width=True):
+                # Keep only the welcome message
+                welcome_msg = st.session_state.chat_history[0]
+                st.session_state.chat_history = [welcome_msg]
+
+def generate_top_performers_response(completed_df):
+    """Generate top performers analysis response"""
+    
+    if completed_df.empty:
+        return "❌ No completed work items available to analyze top performers."
+    
+    # Analyze performance by assignee
+    assignee_stats = completed_df.groupby('assignee').agg({
+        'story_points': ['sum', 'mean'],
+        'id': 'count',
+        'cycle_time_days': 'mean'
+    }).reset_index()
+    
+    assignee_stats.columns = ['assignee', 'total_points', 'avg_points', 'items_count', 'avg_cycle_time']
+    assignee_stats = assignee_stats[assignee_stats['assignee'] != 'Unassigned']
+    
+    if assignee_stats.empty:
+        return "❌ No assigned work items available to analyze top performers."
+    
+    # Sort by total story points
+    top_performers = assignee_stats.sort_values('total_points', ascending=False).head(3)
+    
+    response = "🏆 **Top Performers This Sprint:**\n\n"
+    
+    for i, (_, performer) in enumerate(top_performers.iterrows(), 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+        cycle_time_text = f"{performer['avg_cycle_time']:.1f} days avg cycle time" if pd.notna(performer['avg_cycle_time']) else "No cycle time data"
+        
+        response += f"{medal} **{performer['assignee']}**\n"
+        response += f"   - {int(performer['total_points'])} story points delivered\n"
+        response += f"   - {int(performer['items_count'])} work items completed\n"
+        response += f"   - {cycle_time_text}\n\n"
+    
+    # Additional insights
+    total_team_points = assignee_stats['total_points'].sum()
+    top_performer_points = top_performers.iloc[0]['total_points']
+    top_performer_percentage = (top_performer_points / total_team_points * 100) if total_team_points > 0 else 0
+    
+    response += f"💡 **Insights:**\n"
+    response += f"- Top performer delivered {top_performer_percentage:.1f}% of total team story points\n"
+    response += f"- Team has {len(assignee_stats)} active contributors\n"
+    response += f"- Average team member delivered {assignee_stats['total_points'].mean():.1f} story points"
+    
+    return response
+
+def process_ai_question(question, df, completed_df):
+    """Process user question and generate AI response based on data analysis"""
+    question_lower = question.lower()
+    
+    # Calculate common metrics
+    completion_rate = (len(completed_df) / len(df)) * 100 if len(df) > 0 else 0
+    total_points = completed_df['story_points'].sum()
+    total_targeted_points = df['story_points'].sum()
+    
+    # Get current context
+    current_team = st.session_state.get('selected_team', 'ADGE-Prep')
+    current_sprint = st.session_state.get('selected_sprint', '2025_S15_Jul16-Jul29')
+    
+    # Sprint date mapping
+    sprint_date_mapping = {
+        "2025_S14_Jul02-Jul15": "July 2-15, 2025",
+        "2025_S15_Jul16-Jul29": "July 16-29, 2025",
+        "2025_S16_Jul30-Aug12": "July 30 - August 12, 2025",
+        "2025_S17_Aug13-Aug26": "August 13-26, 2025"
+    }
+    sprint_period = sprint_date_mapping.get(current_sprint, "Unknown Sprint Period")
+    
+    # Question routing based on keywords
+    if any(word in question_lower for word in ['summary', 'overview', 'status', 'how are we doing']):
+        return generate_sprint_summary_response(df, completed_df, current_team, sprint_period, completion_rate, total_points, total_targeted_points)
+    
+    elif any(word in question_lower for word in ['top performer', 'best', 'hero', 'most productive', 'leader']):
+        return generate_top_performers_response(completed_df)
+    
+    elif any(word in question_lower for word in ['blocker', 'issue', 'problem', 'concern', 'risk', 'delay']):
+        return generate_issues_response(df, completed_df)
+    
+    elif any(word in question_lower for word in ['cycle time', 'how long', 'duration', 'time to complete']):
+        return generate_cycle_time_response(completed_df)
+    
+    elif any(word in question_lower for word in ['category', 'type', 'breakdown', 'distribution']):
+        return generate_category_breakdown_response(completed_df)
+    
+    elif any(word in question_lower for word in ['goal', 'target', 'objective', 'tracking']):
+        return generate_goals_tracking_response(df, completed_df, completion_rate, total_points, total_targeted_points)
+    
+    elif any(word in question_lower for word in ['velocity', 'pace', 'speed', 'rate']):
+        return generate_velocity_response(completed_df, current_sprint)
+    
+    elif any(word in question_lower for word in ['assignee', 'who', 'team member', 'developer']):
+        return generate_assignee_analysis_response(completed_df)
+    
+    elif any(word in question_lower for word in ['backend', 'frontend', 'ux', 'bug', 'testing']):
+        return generate_category_specific_response(question_lower, df, completed_df)
+    
+    elif any(word in question_lower for word in ['story points', 'points', 'effort', 'complexity']):
+        return generate_story_points_response(df, completed_df, total_points, total_targeted_points)
+    
+    elif any(word in question_lower for word in ['remaining', 'left', 'incomplete', 'pending']):
+        return generate_remaining_work_response(df, completed_df)
+    
+    else:
+        # Generic response with data insights
+        return generate_generic_response(question, df, completed_df, current_team, sprint_period)
+
+def generate_sprint_summary_response(df, completed_df, current_team, sprint_period, completion_rate, total_points, total_targeted_points):
+    """Generate comprehensive sprint summary response"""
+    
+    # Category breakdown
+    category_summary = completed_df.groupby('category').agg({
+        'id': 'count',
+        'story_points': 'sum'
+    }).reset_index()
+    
+    top_category = category_summary.loc[category_summary['story_points'].idxmax()] if not category_summary.empty else None
+    
+    # Cycle time analysis
+    cycle_time_items = completed_df[completed_df['cycle_time_days'].notna()]
+    avg_cycle_time = cycle_time_items['cycle_time_days'].mean() if len(cycle_time_items) > 0 else 0
+    
+    response = f"""
+📊 **Sprint Summary for {current_team}**
+
+**Sprint Period**: {sprint_period}
+
+**🎯 Key Achievements:**
+- ✅ **{completion_rate:.1f}% completion rate** ({len(completed_df)} of {len(df)} items completed)
+- 🚀 **{int(total_points)} story points delivered** out of {int(total_targeted_points)} targeted
+- ⚡ **{avg_cycle_time:.1f} days average cycle time** for completed items
+
+**📋 Work Distribution:**
+"""
+    
+    if not category_summary.empty:
+        for _, row in category_summary.head(3).iterrows():
+            percentage = (row['story_points'] / total_points * 100) if total_points > 0 else 0
+            response += f"- **{row['Category']}**: {row['id']} items, {int(row['story_points'])} points ({percentage:.1f}%)\n"
+    
+    # Performance assessment
+    if completion_rate >= 85:
+        response += "\n🏆 **Performance**: Excellent sprint execution with strong delivery rate!"
+    elif completion_rate >= 70:
+        response += "\n✅ **Performance**: Good sprint progress with solid completion rate."
+    else:
+        response += "\n⚠️ **Performance**: Below target completion rate - review sprint planning and capacity."
+    
+    if top_category is not None:
+        response += f"\n🎨 **Focus Area**: This was a {top_category['Category'].lower()}-heavy sprint with significant progress in that area."
+    
+    return response
+
+def generate_issues_response(df, completed_df):
+    """Generate response about potential issues and blockers"""
+    
+    issues = []
+    
+    # Check completion rate
+    completion_rate = (len(completed_df) / len(df)) * 100 if len(df) > 0 else 0
+    if completion_rate < 70:
+        issues.append(f"⚠️ **Low completion rate** ({completion_rate:.1f}%) - Sprint may be over-committed")
+    
+    # Check for items with long cycle times
+    cycle_time_items = completed_df[completed_df['cycle_time_days'].notna()]
+    if len(cycle_time_items) > 0:
+        avg_cycle_time = cycle_time_items['cycle_time_days'].mean()
+        long_items = cycle_time_items[cycle_time_items['cycle_time_days'] > avg_cycle_time * 1.5]
+        if len(long_items) > 0:
+            issues.append(f"🐌 **{len(long_items)} items took longer than expected** (>{avg_cycle_time * 1.5:.1f} days)")
+    
+    # Check for unassigned items
+    unassigned_items = df[df['assignee'] == 'Unassigned']
+    if len(unassigned_items) > 0:
+        issues.append(f"👤 **{len(unassigned_items)} unassigned items** - May cause delays")
+    
+    # Check for items without story points
+    no_points_items = df[df['story_points'] == 0]
+    if len(no_points_items) > 0:
+        issues.append(f"📊 **{len(no_points_items)} items without story points** - Estimation needed")
+    
+    # Check remaining work distribution
+    remaining_items = df[~df['is_completed']]
+    if len(remaining_items) > 0:
+        remaining_by_assignee = remaining_items.groupby('assignee')['story_points'].sum().sort_values(ascending=False)
+        if len(remaining_by_assignee) > 0 and remaining_by_assignee.iloc[0] > remaining_by_assignee.mean() * 2:
+            overloaded_person = remaining_by_assignee.index[0]
+            overloaded_points = remaining_by_assignee.iloc[0]
+            issues.append(f"⚖️ **Workload imbalance** - {overloaded_person} has {int(overloaded_points)} remaining points")
+    
+    if not issues:
+        return "✅ **No major issues detected!** The sprint appears to be progressing well with no significant blockers identified."
+    
+    response = "⚠️ **Potential Issues & Blockers Identified:**\n\n"
+    for issue in issues:
+        response += f"{issue}\n"
+    
+    response += "\n💡 **Recommendations:**\n"
+    response += "- Review sprint capacity and scope\n"
+    response += "- Address unassigned items promptly\n"
+    response += "- Consider pair programming for complex items\n"
+    response += "- Balance workload across team members"
+    
+    return response
+
+def generate_cycle_time_response(completed_df):
+    """Generate cycle time analysis response"""
+    
+    cycle_time_items = completed_df[completed_df['cycle_time_days'].notna()]
+    
+    if cycle_time_items.empty:
+        return "❌ **No cycle time data available** - Items may be missing activation or completion dates."
+    
+    avg_cycle_time = cycle_time_items['cycle_time_days'].mean()
+    median_cycle_time = cycle_time_items['cycle_time_days'].median()
+    max_cycle_time = cycle_time_items['cycle_time_days'].max()
+    min_cycle_time = cycle_time_items['cycle_time_days'].min()
+    
+    # Performance categories
+    fast_items = len(cycle_time_items[cycle_time_items['cycle_time_days'] <= 7])
+    normal_items = len(cycle_time_items[(cycle_time_items['cycle_time_days'] > 7) & (cycle_time_items['cycle_time_days'] <= 14)])
+    slow_items = len(cycle_time_items[cycle_time_items['cycle_time_days'] > 14])
+    
+    response = f"⏱️ **Cycle Time Analysis:**\n\n"
+    response += f"📊 **Overall Metrics:**\n"
+    response += f"- **Average**: {avg_cycle_time:.1f} days\n"
+    response += f"- **Median**: {median_cycle_time:.1f} days\n"
+    response += f"- **Range**: {min_cycle_time} - {max_cycle_time} days\n\n"
+    
+    response += f"🎯 **Performance Distribution:**\n"
+    response += f"- 🟢 **Fast (≤7 days)**: {fast_items} items ({fast_items/len(cycle_time_items)*100:.1f}%)\n"
+    response += f"- 🟡 **Normal (8-14 days)**: {normal_items} items ({normal_items/len(cycle_time_items)*100:.1f}%)\n"
+    response += f"- 🔴 **Slow (>14 days)**: {slow_items} items ({slow_items/len(cycle_time_items)*100:.1f}%)\n\n"
+    
+    # Category analysis
+    cycle_by_category = cycle_time_items.groupby('category')['cycle_time_days'].mean().sort_values(ascending=False)
+    if not cycle_by_category.empty:
+        response += f"📋 **By Category:**\n"
+        for category, avg_time in cycle_by_category.head(3).items():
+            response += f"- **{category}**: {avg_time:.1f} days average\n"
+    
+    # Recommendations
+    if avg_cycle_time > 10:
+        response += f"\n💡 **Recommendations**: Consider breaking down larger items and addressing blockers to improve cycle time."
+    else:
+        response += f"\n✅ **Good Performance**: Team is maintaining efficient cycle times!"
+    
+    return response
+
+def generate_category_breakdown_response(completed_df):
+    """Generate work category breakdown response"""
+    
+    if completed_df.empty:
+        return "❌ No completed work items available for category analysis."
+    
+    category_summary = completed_df.groupby('category').agg({
+        'id': 'count',
+        'story_points': 'sum'
+    }).reset_index()
+    category_summary.columns = ['Category', 'Items', 'Story Points']
+    
+    total_items = category_summary['Items'].sum()
+    total_points = category_summary['Story Points'].sum()
+    
+    response = f"📋 **Work Category Breakdown:**\n\n"
+    
+    for _, row in category_summary.sort_values('Story Points', ascending=False).iterrows():
+        item_pct = (row['Items'] / total_items * 100) if total_items > 0 else 0
+        points_pct = (row['Story Points'] / total_points * 100) if total_points > 0 else 0
+        
+        response += f"**{row['Category']}:**\n"
+        response += f"- {row['Items']} items ({item_pct:.1f}%)\n"
+        response += f"- {int(row['Story Points'])} story points ({points_pct:.1f}%)\n\n"
+    
+    # Insights
+    top_category = category_summary.loc[category_summary['Story Points'].idxmax()]
+    response += f"🎯 **Key Insight**: This sprint was {top_category['Category'].lower()}-focused, "
+    response += f"representing {(top_category['Story Points']/total_points*100):.1f}% of delivered story points."
+    
+    return response
+
+def generate_goals_tracking_response(df, completed_df, completion_rate, total_points, total_targeted_points):
+    """Generate sprint goals tracking response"""
+    
+    response = f"🎯 **Sprint Goals Tracking:**\n\n"
+    
+    # Completion tracking
+    if completion_rate >= 90:
+        response += f"✅ **Completion Goal**: EXCEEDED - {completion_rate:.1f}% completion rate\n"
+    elif completion_rate >= 80:
+        response += f"✅ **Completion Goal**: MET - {completion_rate:.1f}% completion rate\n"
+    elif completion_rate >= 70:
+        response += f"⚠️ **Completion Goal**: APPROACHING - {completion_rate:.1f}% completion rate\n"
+    else:
+        response += f"❌ **Completion Goal**: BEHIND - {completion_rate:.1f}% completion rate\n"
+    
+    # Story points tracking
+    points_completion = (total_points / total_targeted_points * 100) if total_targeted_points > 0 else 0
+    if points_completion >= 90:
+        response += f"✅ **Story Points Goal**: EXCEEDED - {int(total_points)}/{int(total_targeted_points)} points ({points_completion:.1f}%)\n"
+    elif points_completion >= 80:
+        response += f"✅ **Story Points Goal**: MET - {int(total_points)}/{int(total_targeted_points)} points ({points_completion:.1f}%)\n"
+    else:
+        response += f"⚠️ **Story Points Goal**: BEHIND - {int(total_points)}/{int(total_targeted_points)} points ({points_completion:.1f}%)\n"
+    
+    # Quality goals
+    bug_items = completed_df[completed_df['category'].str.contains('Bug', case=False, na=False)]
+    if len(bug_items) <= 2:
+        response += f"✅ **Quality Goal**: EXCELLENT - Only {len(bug_items)} bugs resolved\n"
+    else:
+        response += f"⚠️ **Quality Goal**: REVIEW NEEDED - {len(bug_items)} bugs resolved\n"
+    
+    # Team collaboration
+    assignees_count = len(df['assignee'].unique()) - (1 if 'Unassigned' in df['assignee'].unique() else 0)
+    response += f"👥 **Team Engagement**: {assignees_count} team members actively contributing\n"
+    
+    # Recommendations
+    remaining_items = len(df) - len(completed_df)
+    if remaining_items > 0:
+        response += f"\n📋 **Remaining Work**: {remaining_items} items still in progress\n"
+        response += f"💡 **Focus Areas**: Prioritize high-value items and address any blockers"
+    else:
+        response += f"\n🎉 **Sprint Complete**: All planned work has been delivered!"
+    
+    return response
+
+def generate_velocity_response(completed_df, current_sprint):
+    """Generate velocity analysis response"""
+    
+    if completed_df.empty:
+        return "❌ No completed work items available for velocity analysis."
+    
+    # Sprint duration (assuming 2-week sprints)
+    sprint_duration = 14  # days
+    
+    # Calculate velocity metrics
+    total_items = len(completed_df)
+    total_points = completed_df['story_points'].sum()
+    
+    items_per_day = total_items / sprint_duration
+    points_per_day = total_points / sprint_duration
+    
+    response = f"🚀 **Team Velocity Analysis:**\n\n"
+    response += f"📊 **Current Sprint ({current_sprint}):**\n"
+    response += f"- **Items Velocity**: {items_per_day:.1f} items/day\n"
+    response += f"- **Points Velocity**: {points_per_day:.1f} story points/day\n"
+    response += f"- **Total Delivered**: {total_items} items, {int(total_points)} points\n\n"
+    
+    # Velocity by category
+    category_velocity = completed_df.groupby('category').agg({
+        'id': 'count',
+        'story_points': 'sum'
+    }).reset_index()
+    category_velocity.columns = ['category', 'items_count', 'story_points']
+    
+    response += f"📋 **Velocity by Category:**\n"
+    for _, row in category_velocity.sort_values('story_points', ascending=False).iterrows():
+        cat_points_per_day = row['story_points'] / sprint_duration
+        response += f"- **{row['category']}**: {cat_points_per_day:.1f} points/day\n"
+    
+    # Performance assessment
+    if points_per_day >= 3:
+        response += f"\n🏆 **High Velocity**: Team is delivering at an excellent pace!"
+    elif points_per_day >= 2:
+        response += f"\n✅ **Good Velocity**: Team is maintaining a solid delivery pace."
+    else:
+        response += f"\n⚠️ **Low Velocity**: Consider reviewing sprint planning and capacity."
+    
+    return response
+
+def generate_assignee_analysis_response(completed_df):
+    """Generate assignee/team member analysis response"""
+    
+    if completed_df.empty:
+        return "❌ No completed work items available for team analysis."
+    
+    # Assignee statistics
+    assignee_stats = completed_df.groupby('assignee').agg({
+        'id': 'count',
+        'story_points': 'sum',
+        'cycle_time_days': 'mean'
+    }).reset_index()
+    assignee_stats.columns = ['Assignee', 'Items', 'Story Points', 'Avg Cycle Time']
+    assignee_stats = assignee_stats[assignee_stats['Assignee'] != 'Unassigned']
+    
+    if assignee_stats.empty:
+        return "❌ No assigned work items available for team analysis."
+    
+    assignee_stats = assignee_stats.sort_values('Story Points', ascending=False)
+    
+    response = f"👥 **Team Member Analysis:**\n\n"
+    
+    for _, member in assignee_stats.iterrows():
+        cycle_time_text = f"{member['Avg Cycle Time']:.1f} days" if pd.notna(member['Avg Cycle Time']) else "N/A"
+        response += f"**{member['Assignee']}:**\n"
+        response += f"- {int(member['Items'])} items completed\n"
+        response += f"- {int(member['Story Points'])} story points delivered\n"
+        response += f"- {cycle_time_text} average cycle time\n\n"
+    
+    # Team insights
+    total_points = assignee_stats['Story Points'].sum()
+    avg_points_per_person = assignee_stats['Story Points'].mean()
+    
+    response += f"📊 **Team Insights:**\n"
+    response += f"- **Active Contributors**: {len(assignee_stats)} team members\n"
+    response += f"- **Average per Person**: {avg_points_per_person:.1f} story points\n"
+    response += f"- **Total Team Output**: {int(total_points)} story points\n"
+    
+    # Workload distribution
+    max_points = assignee_stats['Story Points'].max()
+    min_points = assignee_stats['Story Points'].min()
+    if max_points > min_points * 2:
+        response += f"⚖️ **Workload Distribution**: Uneven - consider balancing in future sprints"
+    else:
+        response += f"✅ **Workload Distribution**: Well balanced across team members"
+    
+    return response
+
+def generate_category_specific_response(question_lower, df, completed_df):
+    """Generate response for category-specific questions"""
+    
+    # Determine which category is being asked about
+    if 'backend' in question_lower:
+        category = 'Backend'
+    elif 'frontend' in question_lower:
+        category = 'Frontend'
+    elif 'ux' in question_lower:
+        category = 'UX'
+    elif 'bug' in question_lower:
+        category = 'Bug'
+    elif 'testing' in question_lower or 'qa' in question_lower:
+        category = 'Testing/QA'
+    else:
+        category = None
+    
+    if not category:
+        return "❌ Could not identify specific category from your question. Try asking about 'backend', 'frontend', 'UX', 'bugs', or 'testing' work items."
+    
+    # Filter items by category
+    category_items = df[df['category'].str.contains(category, case=False, na=False)]
+    completed_category_items = completed_df[completed_df['category'].str.contains(category, case=False, na=False)]
+    
+    if category_items.empty:
+        return f"❌ No {category.lower()} work items found in the current sprint data."
+    
+    response = f"📋 **{category} Work Items Analysis:**\n\n"
+    
+    # Basic stats
+    total_items = len(category_items)
+    completed_items = len(completed_category_items)
+    completion_rate = (completed_items / total_items * 100) if total_items > 0 else 0
+    
+    response += f"📊 **Overview:**\n"
+    response += f"- **Total {category} Items**: {total_items}\n"
+    response += f"- **Completed**: {completed_items} ({completion_rate:.1f}%)\n"
+    response += f"- **Remaining**: {total_items - completed_items}\n\n"
+    
+    # Story points analysis
+    if not completed_category_items.empty:
+        total_points = completed_category_items['story_points'].sum()
+        avg_points = completed_category_items['story_points'].mean()
+        response += f"📈 **Story Points:**\n"
+        response += f"- **Total Delivered**: {int(total_points)} points\n"
+        response += f"- **Average per Item**: {avg_points:.1f} points\n\n"
+    
+    # Cycle time analysis
+    cycle_time_items = completed_category_items[completed_category_items['cycle_time_days'].notna()]
+    if not cycle_time_items.empty:
+        avg_cycle_time = cycle_time_items['cycle_time_days'].mean()
+        response += f"⏱️ **Cycle Time:**\n"
+        response += f"- **Average**: {avg_cycle_time:.1f} days\n"
+        response += f"- **Items with Data**: {len(cycle_time_items)}\n\n"
+    
+    # Top items
+    if not completed_category_items.empty:
+        response += f"🎯 **Completed {category} Items:**\n"
+        for _, item in completed_category_items.head(5).iterrows():
+            response += f"- **#{item['id']}**: {item['title'][:60]}{'...' if len(item['title']) > 60 else ''}\n"
+    
+    return response
+
+def generate_story_points_response(df, completed_df, total_points, total_targeted_points):
+    """Generate story points analysis response"""
+    
+    response = f"📊 **Story Points Analysis:**\n\n"
+    
+    # Overall metrics
+    points_completion = (total_points / total_targeted_points * 100) if total_targeted_points > 0 else 0
+    response += f"🎯 **Overall Progress:**\n"
+    response += f"- **Delivered**: {int(total_points)} story points\n"
+    response += f"- **Targeted**: {int(total_targeted_points)} story points\n"
+    response += f"- **Completion**: {points_completion:.1f}%\n\n"
+    
+    # Distribution analysis
+    if not completed_df.empty:
+        points_dist = completed_df['story_points'].value_counts().sort_index()
+        response += f"📈 **Points Distribution (Completed Items):**\n"
+        for points, count in points_dist.items():
+            if points > 0:  # Skip 0-point items
+                response += f"- **{points} points**: {count} items\n"
+        
+        # Average complexity
+        avg_points = completed_df[completed_df['story_points'] > 0]['story_points'].mean()
+        response += f"\n📋 **Average Complexity**: {avg_points:.1f} story points per item\n"
+    
+    # Category breakdown
+    if not completed_df.empty:
+        category_points = completed_df.groupby('category')['story_points'].sum().sort_values(ascending=False)
+        response += f"\n🏷️ **Points by Category:**\n"
+        for category, points in category_points.head(5).items():
+            percentage = (points / total_points * 100) if total_points > 0 else 0
+            response += f"- **{category}**: {int(points)} points ({percentage:.1f}%)\n"
+    
+    # Performance assessment
+    if points_completion >= 90:
+        response += f"\n🏆 **Excellent Progress**: Team exceeded story point targets!"
+    elif points_completion >= 80:
+        response += f"\n✅ **Good Progress**: Team met most story point targets."
+    else:
+        response += f"\n⚠️ **Behind Target**: Consider reviewing sprint scope and capacity."
+    
+    return response
+
+def generate_remaining_work_response(df, completed_df):
+    """Generate remaining work analysis response"""
+    
+    remaining_df = df[~df['is_completed']]
+    
+    if remaining_df.empty:
+        return "🎉 **All Work Complete!** No remaining work items in the current sprint."
+    
+    response = f"📋 **Remaining Work Analysis:**\n\n"
+    
+    # Basic metrics
+    total_remaining = len(remaining_df)
+    remaining_points = remaining_df['story_points'].sum()
+    
+    response += f"📊 **Overview:**\n"
+    response += f"- **Remaining Items**: {total_remaining}\n"
+    response += f"- **Remaining Story Points**: {int(remaining_points)}\n"
+    response += f"- **Completion Progress**: {len(completed_df)}/{len(df)} items ({(len(completed_df)/len(df)*100):.1f}%)\n\n"
+    
+    # Breakdown by status
+    status_breakdown = remaining_df['state'].value_counts()
+    response += f"🔄 **By Status:**\n"
+    for status, count in status_breakdown.items():
+        response += f"- **{status}**: {count} items\n"
+    
+    # Breakdown by assignee
+    assignee_breakdown = remaining_df.groupby('assignee').agg({
+        'id': 'count',
+        'story_points': 'sum'
+    }).sort_values('story_points', ascending=False)
+    
+    response += f"\n👥 **By Assignee:**\n"
+    for assignee, data in assignee_breakdown.head(5).iterrows():
+        response += f"- **{assignee}**: {data['id']} items, {int(data['story_points'])} points\n"
+    
+    # Category breakdown
+    category_breakdown = remaining_df.groupby('category').agg({
+        'id': 'count',
+        'story_points': 'sum'
+    }).sort_values('story_points', ascending=False)
+    
+    response += f"\n🏷️ **By Category:**\n"
+    for category, data in category_breakdown.head(5).iterrows():
+        response += f"- **{category}**: {data['id']} items, {int(data['story_points'])} points\n"
+    
+    # Recommendations
+    response += f"\n💡 **Recommendations:**\n"
+    if total_remaining > len(completed_df):
+        response += "- Sprint appears over-committed - consider scope reduction\n"
+    response += "- Focus on high-priority items first\n"
+    response += "- Address any blockers preventing progress\n"
+    response += "- Consider pair programming for complex items"
+    
+    return response
+
+def generate_generic_response(question, df, completed_df, current_team, sprint_period):
+    """Generate generic response with data insights"""
+    
+    completion_rate = (len(completed_df) / len(df)) * 100 if len(df) > 0 else 0
+    total_points = completed_df['story_points'].sum()
+    
+    response = f"🤖 **AI Assistant Response:**\n\n"
+    response += f"I understand you're asking about: *\"{question}\"*\n\n"
+    response += f"Here's what I can tell you about your current sprint:\n\n"
+    
+    response += f"📊 **Quick Stats for {current_team}:**\n"
+    response += f"- **Sprint**: {sprint_period}\n"
+    response += f"- **Completion Rate**: {completion_rate:.1f}%\n"
+    response += f"- **Story Points Delivered**: {int(total_points)}\n"
+    response += f"- **Total Work Items**: {len(df)}\n\n"
+    
+    response += f"💡 **Try asking more specific questions like:**\n"
+    response += f"- \"What's our sprint completion rate?\"\n"
+    response += f"- \"Who are the top performers?\"\n"
+    response += f"- \"Show me cycle time analysis\"\n"
+    response += f"- \"What are the potential blockers?\"\n"
+    response += f"- \"Break down work by categories\"\n\n"
+    
+    response += f"I'm here to help you analyze your team's performance and sprint progress! 🚀"
+    
+    return response
+    """Generate top performers analysis response"""
+    
+    if completed_df.empty:
+        return "❌ No completed work items available to analyze top performers."
+    
+    # Analyze performance by assignee
+    assignee_stats = completed_df.groupby('assignee').agg({
+        'story_points': ['sum', 'mean'],
+        'id': 'count',
+        'cycle_time_days': 'mean'
+    }).reset_index()
+    
+    assignee_stats.columns = ['assignee', 'total_points', 'avg_points', 'items_count', 'avg_cycle_time']
+    assignee_stats = assignee_stats[assignee_stats['assignee'] != 'Unassigned']
+    
+    if assignee_stats.empty:
+        return "❌ No assigned work items available to analyze top performers."
+    
+    # Sort by total story points
+    top_performers = assignee_stats.sort_values('total_points', ascending=False).head(3)
+    
+    response = "🏆 **Top Performers This Sprint:**\n\n"
+    
+    for i, (_, performer) in enumerate(top_performers.iterrows(), 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+        cycle_time_text = f"{performer['avg_cycle_time']:.1f} days avg cycle time" if pd.notna(performer['avg_cycle_time']) else "No cycle time data"
+        
+        response += f"{medal} **{performer['assignee']}**\n"
+        response += f"   - {int(performer['total_points'])} story points delivered\n"
+        response += f"   - {int(performer['items_count'])} work items completed\n"
+        response += f"   - {cycle_time_text}\n\n"
+    
+    # Additional insights
+    total_team_points = assignee_stats['total_points'].sum()
+    top_performer_points = top_performers.iloc[0]['total_points']
+    top_performer_percentage = (top_performer_points / total_team_points * 100) if total_team_points > 0 else 0
+    
+    response += f"💡 **Insights:**\n"
+    response += f"- Top performer delivered {top_performer_percentage:.1f}% of total team story points\n"
+    response += f"- Team has {len(assignee_stats)} active contributors\n"
+    response += f"- Average team member delivered {assignee_stats['total_points'].mean():.1f} story points"
     """Render the data monitoring tab"""
     st.header("👁️ Data Monitor")
     st.markdown("Real-time monitoring of Azure DevOps data files and changes")
