@@ -32,46 +32,74 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Enhanced CSS for beautiful, professional dashboard styling
+# Enhanced CSS for beautiful, professional dashboard styling with full width
 st.markdown("""
 <style>
-    /* Remove default padding and margins for full width */
+    /* AGGRESSIVE FULL WIDTH OVERRIDES */
     .main .block-container {
-        padding-top: 1rem;
-        padding-left: 1rem;
-        padding-right: 1rem;
-        padding-bottom: 1rem;
-        max-width: none;
+        padding-top: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        padding-bottom: 1rem !important;
+        max-width: none !important;
+        width: 100% !important;
     }
     
-    /* Global Styles */
-    .main > div {
-        padding-top: 1rem;
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        max-width: none;
+    /* Target all possible Streamlit container classes */
+    .css-1d391kg, .css-1lcbmhc, .css-18e3th9, .css-1y4p8pa, .css-12oz5g7 {
+        max-width: none !important;
+        width: 100% !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
     }
     
-    /* Remove sidebar padding when collapsed */
-    .css-1d391kg {
-        padding-top: 1rem;
-    }
-    
-    /* Full width container */
+    /* Main app container */
     .stApp > div {
-        max-width: none;
+        max-width: none !important;
+        width: 100% !important;
+        padding: 0 !important;
     }
     
-    /* Remove default streamlit padding */
-    .css-18e3th9 {
-        padding-top: 0;
-        padding-bottom: 0;
-        padding-left: 1rem;
-        padding-right: 1rem;
+    /* Main content area */
+    .main > div {
+        padding-top: 1rem !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        max-width: none !important;
+        width: 100% !important;
     }
     
-    /* Ensure full width for main content */
-    .css-1d391kg, .css-1lcbmhc {
-        max-width: none;
+    /* Streamlit's main container */
+    section.main > div {
+        max-width: none !important;
+        width: 100% !important;
+        padding-left: 0.5rem !important;
+        padding-right: 0.5rem !important;
+    }
+    
+    /* Additional container overrides */
+    .css-k1vhr4, .css-1kyxreq, .css-17eq0hr {
+        max-width: none !important;
+        width: 100% !important;
+    }
+    
+    /* Remove any margin auto that centers content */
+    .main .block-container, .css-1d391kg, .css-1lcbmhc {
+        margin-left: 0 !important;
+        margin-right: 0 !important;
+    }
+    
+    /* Ensure tabs and content use full width */
+    .stTabs [data-baseweb="tab-list"], .stTabs [data-baseweb="tab-panel"] {
+        width: 100% !important;
+        max-width: none !important;
+    }
+    
+    /* Full width for all content elements */
+    .element-container, .stMarkdown, .stDataFrame, .stPlotlyChart {
+        width: 100% !important;
+        max-width: none !important;
     }
     
     /* Header Styling */
