@@ -1304,32 +1304,150 @@ def render_cycle_time_tab(completed_df):
     """Render the cycle time analysis tab"""
     st.header("Cycle Time Analysis")
     
+    # Get current sprint context
+    current_team = st.session_state.get('selected_team', 'ADGE-Prep')
+    current_sprint = st.session_state.get('selected_sprint', '2025_S15_Jul16-Jul29')
+    
+    # Sprint date mapping for context
+    sprint_date_mapping = {
+        "2025_S14_Jul02-Jul15": "July 2-15, 2025",
+        "2025_S15_Jul16-Jul29": "July 16-29, 2025",
+        "2025_S16_Jul30-Aug12": "July 30 - August 12, 2025",
+        "2025_S17_Aug13-Aug26": "August 13-26, 2025"
+    }
+    sprint_period = sprint_date_mapping.get(current_sprint, "Unknown Sprint Period")
+    
+    # Display sprint context
+    st.info(f"""
+    **Sprint Context**: {sprint_period} ({current_sprint})  
+    **Team**: {current_team}  
+    **Analysis**: Cycle time for work items completed in this sprint
+    """)
+    
+    # Filter for items with cycle time data
     cycle_time_df = completed_df[completed_df['cycle_time_days'].notna()].copy()
     
     if cycle_time_df.empty:
-        st.warning("No cycle time data available for completed work items.")
+        st.warning("No cycle time data available for completed work items in this sprint.")
+        st.info("""
+        **Why no cycle time data?**
+        - Work items need both activation date and completion date
+        - Items may have been completed outside the sprint period
+        - Some items might be missing required date fields
+        """)
+        
+        # Show debug information
+        with st.expander("🔍 Debug: Check work item dates"):
+            st.write("**Completed items with date information:**")
+            debug_df = completed_df[['id', 'title', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days']].copy()
+            debug_df['has_activated'] = debug_df['activated_date'].notna()
+            debug_df['has_resolved'] = debug_df['resolved_date'].notna()
+            debug_df['has_closed'] = debug_df['closed_date'].notna()
+            st.dataframe(debug_df)
         return
+    
+    # Sprint-specific insights and recommendations - moved to top
+    st.subheader("💡 Sprint-Specific Insights & Recommendations")
+    
+    avg_time = cycle_time_df['cycle_time_days'].mean()
+    
+    if not cycle_time_df.empty:
+        # Performance insights
+        insights = []
+        
+        # Overall performance assessment
+        if avg_time <= 7:
+            insights.append("🏆 **Excellent cycle time performance** - Team is delivering work very efficiently")
+        elif avg_time <= 10:
+            insights.append("✅ **Good cycle time performance** - Team maintains solid delivery pace")
+        else:
+            insights.append("⚠️ **Cycle time needs attention** - Consider breaking down work or addressing blockers")
+        
+        # Category-specific insights
+        if 'category' in cycle_time_df.columns:
+            category_cycle_times = cycle_time_df.groupby('category')['cycle_time_days'].mean()
+            slowest_category = category_cycle_times.idxmax()
+            fastest_category = category_cycle_times.idxmin()
+            
+            if len(category_cycle_times) > 1:
+                insights.append(f"📊 **{slowest_category} work takes longest** ({category_cycle_times[slowest_category]:.1f} days avg)")
+                insights.append(f"⚡ **{fastest_category} work is fastest** ({category_cycle_times[fastest_category]:.1f} days avg)")
+        
+        # Team performance insights
+        assignee_cycle_time = cycle_time_df.groupby('assignee').agg({
+            'cycle_time_days': ['mean', 'count', 'std']
+        }).round(1)
+        assignee_cycle_time.columns = ['Avg Cycle Time', 'Items Count', 'Std Dev']
+        assignee_cycle_time = assignee_cycle_time[assignee_cycle_time.index != 'Unassigned']
+        assignee_cycle_time = assignee_cycle_time.sort_values('Avg Cycle Time', ascending=True)
+        
+        if not assignee_cycle_time.empty and len(assignee_cycle_time) > 1:
+            fastest_member = assignee_cycle_time.index[0]  # Already sorted by avg cycle time ascending
+            insights.append(f"🌟 **{fastest_member} has the fastest cycle time** - Consider knowledge sharing")
+        
+        # Display insights
+        for insight in insights:
+            st.info(insight)
+        
+        # Recommendations based on data
+        st.markdown("### 🎯 Recommendations for Next Sprint:")
+        recommendations = []
+        
+        if avg_time > 10:
+            recommendations.append("- **Break down large work items** into smaller, manageable pieces")
+            recommendations.append("- **Identify and address common blockers** that slow down delivery")
+        
+        # Long cycle items analysis for recommendations
+        if len(cycle_time_df) > 1:
+            std_dev = cycle_time_df['cycle_time_days'].std()
+            threshold = avg_time + std_dev
+            long_cycle_items = cycle_time_df[cycle_time_df['cycle_time_days'] > threshold]
+            
+            if len(long_cycle_items) > 0:
+                recommendations.append(f"- **Review the {len(long_cycle_items)} items that took longer** to identify improvement opportunities")
+        
+        if not assignee_cycle_time.empty and len(assignee_cycle_time) > 1:
+            cycle_time_range = assignee_cycle_time['Avg Cycle Time'].max() - assignee_cycle_time['Avg Cycle Time'].min()
+            if cycle_time_range > 5:
+                recommendations.append("- **Balance workload distribution** - significant variation in team member cycle times")
+                recommendations.append("- **Implement pair programming** for knowledge sharing and skill development")
+        
+        recommendations.append("- **Continue tracking cycle time** to monitor improvement trends")
+        
+        for rec in recommendations:
+            st.markdown(rec)
+    else:
+        st.warning("**No cycle time data available for analysis**")
+        st.info("""
+        **To improve cycle time tracking:**
+        - Ensure work items are properly activated when work begins
+        - Set resolved/closed dates when work is completed
+        - Use consistent workflow states across the team
+        - Track activation and completion dates for all work items
+        """)
+    
+    st.markdown("---")  # Add separator after recommendations
     
     # Cycle time statistics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Items with Data", len(cycle_time_df))
+        st.metric("Items with Cycle Time", len(cycle_time_df), delta=f"of {len(completed_df)} completed")
     
     with col2:
-        avg_time = cycle_time_df['cycle_time_days'].mean()
-        st.metric("Average", f"{avg_time:.1f} days")
+        st.metric("Average Cycle Time", f"{avg_time:.1f} days")
     
     with col3:
         median_time = cycle_time_df['cycle_time_days'].median()
-        st.metric("Median", f"{median_time:.1f} days")
+        st.metric("Median Cycle Time", f"{median_time:.1f} days")
     
     with col4:
         max_time = cycle_time_df['cycle_time_days'].max()
-        st.metric("Maximum", f"{max_time} days")
+        min_time = cycle_time_df['cycle_time_days'].min()
+        st.metric("Range", f"{min_time}-{max_time} days")
     
-    # Simplified Cycle Time Analysis
-    st.subheader("📊 Cycle Time Performance")
+    # Enhanced Cycle Time Analysis
+    st.subheader("📊 Cycle Time Performance Analysis")
     
     # Create performance categories
     cycle_time_df['performance_category'] = cycle_time_df['cycle_time_days'].apply(
@@ -1344,27 +1462,38 @@ def render_cycle_time_tab(completed_df):
     col1, col2 = st.columns(2)
     
     with col1:
-        # Simple bar chart showing performance categories with pastel colors
-        fig_performance = px.bar(
-            x=performance_summary.index,
-            y=performance_summary.values,
-            title="Work Items by Cycle Time Performance",
-            labels={'x': 'Performance Category', 'y': 'Number of Items'},
-            color=performance_summary.index,
-            color_discrete_map={
-                'Fast (≤7 days)': PASTEL_COLORS['performance'][0],
-                'Normal (8-14 days)': PASTEL_COLORS['performance'][1],
-                'Slow (>14 days)': PASTEL_COLORS['performance'][2]
-            }
-        )
-        fig_performance.update_layout(
-            showlegend=False,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(size=12),
-            title_font_size=16
-        )
-        st.plotly_chart(fig_performance, use_container_width=True)
+        # Performance distribution chart - fix data mapping
+        if not performance_summary.empty:
+            # Create DataFrame for proper plotting
+            performance_data = pd.DataFrame({
+                'Performance Category': performance_summary.index,
+                'Number of Items': performance_summary.values
+            })
+            
+            fig_performance = px.bar(
+                performance_data,
+                x='Performance Category',
+                y='Number of Items',
+                title="Work Items by Cycle Time Performance",
+                color='Performance Category',
+                color_discrete_map={
+                    'Fast (≤7 days)': PASTEL_COLORS['performance'][0],
+                    'Normal (8-14 days)': PASTEL_COLORS['performance'][1],
+                    'Slow (>14 days)': PASTEL_COLORS['performance'][2]
+                }
+            )
+            fig_performance.update_layout(
+                showlegend=False,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(size=12),
+                title_font_size=16,
+                xaxis_title="Performance Category",
+                yaxis_title="Number of Items"
+            )
+            st.plotly_chart(fig_performance, use_container_width=True)
+        else:
+            st.info("No performance data available for chart display")
     
     with col2:
         # Performance metrics
@@ -1388,30 +1517,138 @@ def render_cycle_time_tab(completed_df):
         else:
             st.warning(f"⚠️ **Needs Improvement** - Score: {performance_score:.1f}/3.0")
     
-    # Long cycle items
+    # Cycle Time Distribution Chart
+    st.subheader("📈 Cycle Time Distribution")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Histogram of cycle times
+        fig_hist = px.histogram(
+            cycle_time_df,
+            x='cycle_time_days',
+            nbins=10,
+            title="Cycle Time Distribution",
+            labels={'cycle_time_days': 'Cycle Time (Days)', 'count': 'Number of Items'},
+            color_discrete_sequence=[PASTEL_COLORS['primary'][0]]
+        )
+        fig_hist.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=12),
+            title_font_size=16,
+            showlegend=False
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+    
+    with col2:
+        # Cycle time by category
+        if 'category' in cycle_time_df.columns:
+            cycle_by_category = cycle_time_df.groupby('category')['cycle_time_days'].mean().sort_values(ascending=False)
+            
+            fig_category = px.bar(
+                x=cycle_by_category.index,
+                y=cycle_by_category.values,
+                title="Average Cycle Time by Category",
+                labels={'x': 'Category', 'y': 'Average Cycle Time (Days)'},
+                color=cycle_by_category.values,
+                color_continuous_scale=PASTEL_COLORS['warning']
+            )
+            fig_category.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(size=12),
+                title_font_size=16,
+                showlegend=False
+            )
+            st.plotly_chart(fig_category, use_container_width=True)
+    
+    # Cycle Time by Assignee
+    st.subheader("👥 Cycle Time by Team Member")
+    
+    assignee_cycle_time = cycle_time_df.groupby('assignee').agg({
+        'cycle_time_days': ['mean', 'count', 'std']
+    }).round(1)
+    assignee_cycle_time.columns = ['Avg Cycle Time', 'Items Count', 'Std Dev']
+    assignee_cycle_time = assignee_cycle_time[assignee_cycle_time.index != 'Unassigned']
+    assignee_cycle_time = assignee_cycle_time.sort_values('Avg Cycle Time', ascending=True)
+    
+    if not assignee_cycle_time.empty:
+        # Display as a nice table
+        st.dataframe(assignee_cycle_time, use_container_width=True)
+        
+        # Chart showing cycle time by assignee
+        assignee_chart_data = assignee_cycle_time.reset_index()
+        assignee_chart_data = assignee_chart_data.sort_values('Avg Cycle Time', ascending=True)
+        
+        fig_assignee_cycle = px.bar(
+            assignee_chart_data,
+            x='Avg Cycle Time',
+            y='assignee',
+            orientation='h',
+            title="Average Cycle Time by Team Member",
+            labels={'Avg Cycle Time': 'Average Cycle Time (Days)', 'assignee': 'Team Member'},
+            color='Avg Cycle Time',
+            color_continuous_scale=PASTEL_COLORS['warning']
+        )
+        fig_assignee_cycle.update_layout(
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(size=12),
+            title_font_size=16,
+            showlegend=False,
+            height=max(300, len(assignee_chart_data) * 40)  # Dynamic height based on team size
+        )
+        st.plotly_chart(fig_assignee_cycle, use_container_width=True)
+    else:
+        st.info("No team member cycle time data available - items may be unassigned or missing dates")
+    
+    # Long cycle items analysis
     if len(cycle_time_df) > 1:
         std_dev = cycle_time_df['cycle_time_days'].std()
         threshold = avg_time + std_dev
         long_cycle_items = cycle_time_df[cycle_time_df['cycle_time_days'] > threshold]
         
         if not long_cycle_items.empty:
-            st.subheader(f"Items Taking Longer Than Expected ({len(long_cycle_items)} items)")
+            st.subheader(f"⚠️ Items Taking Longer Than Expected ({len(long_cycle_items)} items)")
             st.caption(f"Threshold: {threshold:.1f} days (Average + 1 Standard Deviation)")
             
-            for _, item in long_cycle_items.iterrows():
-                with st.expander(f"#{item['id']}: {item['title'][:60]}... ({item['cycle_time_days']} days)"):
-                    col1, col2 = st.columns(2)
+            # Show detailed analysis of long cycle items
+            for _, item in long_cycle_items.sort_values('cycle_time_days', ascending=False).iterrows():
+                with st.expander(f"#{item['id']}: {item['title'][:60]}... ({item['cycle_time_days']} days)", expanded=False):
+                    col1, col2, col3 = st.columns(3)
+                    
                     with col1:
-                        st.write(f"**Type:** {item['type']}")
-                        st.write(f"**Assignee:** {item['assignee']}")
-                        st.write(f"**Story Points:** {item['story_points']}")
+                        st.markdown(f"""
+                        **Work Item Details:**
+                        - **Type**: {item['type']}
+                        - **Category**: {item['category']}
+                        - **Story Points**: {item['story_points']}
+                        """)
+                    
                     with col2:
-                        if item['activated_date']:
+                        st.markdown(f"""
+                        **Assignment & Timeline:**
+                        - **Assignee**: {item['assignee']}
+                        - **State**: {item['state']}
+                        - **Cycle Time**: {item['cycle_time_days']} days
+                        """)
+                    
+                    with col3:
+                        if item['activated_date'] and (item['resolved_date'] or item['closed_date']):
                             activated = item['activated_date'][:10]
                             completed = (item['resolved_date'] or item['closed_date'])[:10]
-                            st.write(f"**Activated:** {activated}")
-                            st.write(f"**Completed:** {completed}")
-                            st.write(f"**Cycle Time:** {item['cycle_time_days']} days")
+                            st.markdown(f"""
+                            **Date Timeline:**
+                            - **Activated**: {activated}
+                            - **Completed**: {completed}
+                            - **Duration**: {item['cycle_time_days']} days
+                            """)
+                        else:
+                            st.markdown("**Date Timeline:**\n- Date information incomplete")
+        else:
+            st.success("✅ **All Items Completed Within Expected Time**")
+            st.info("No items exceeded the expected cycle time threshold - great team performance!")
 
 def render_categories_tab(completed_df):
     """Render the work categories tab"""
@@ -3560,246 +3797,6 @@ def generate_generic_response(question, df, completed_df, current_team, sprint_p
     response += f"I'm here to help you analyze your team's performance and sprint progress! 🚀"
     
     return response
-    """Generate top performers analysis response"""
-    
-    if completed_df.empty:
-        return "❌ No completed work items available to analyze top performers."
-    
-    # Analyze performance by assignee
-    assignee_stats = completed_df.groupby('assignee').agg({
-        'story_points': ['sum', 'mean'],
-        'id': 'count',
-        'cycle_time_days': 'mean'
-    }).reset_index()
-    
-    assignee_stats.columns = ['assignee', 'total_points', 'avg_points', 'items_count', 'avg_cycle_time']
-    assignee_stats = assignee_stats[assignee_stats['assignee'] != 'Unassigned']
-    
-    if assignee_stats.empty:
-        return "❌ No assigned work items available to analyze top performers."
-    
-    # Sort by total story points
-    top_performers = assignee_stats.sort_values('total_points', ascending=False).head(3)
-    
-    response = "🏆 **Top Performers This Sprint:**\n\n"
-    
-    for i, (_, performer) in enumerate(top_performers.iterrows(), 1):
-        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
-        cycle_time_text = f"{performer['avg_cycle_time']:.1f} days avg cycle time" if pd.notna(performer['avg_cycle_time']) else "No cycle time data"
-        
-        response += f"{medal} **{performer['assignee']}**\n"
-        response += f"   - {int(performer['total_points'])} story points delivered\n"
-        response += f"   - {int(performer['items_count'])} work items completed\n"
-        response += f"   - {cycle_time_text}\n\n"
-    
-    # Additional insights
-    total_team_points = assignee_stats['total_points'].sum()
-    top_performer_points = top_performers.iloc[0]['total_points']
-    top_performer_percentage = (top_performer_points / total_team_points * 100) if total_team_points > 0 else 0
-    
-    response += f"💡 **Insights:**\n"
-    response += f"- Top performer delivered {top_performer_percentage:.1f}% of total team story points\n"
-    response += f"- Team has {len(assignee_stats)} active contributors\n"
-    response += f"- Average team member delivered {assignee_stats['total_points'].mean():.1f} story points"
-    """Render the data monitoring tab"""
-    st.header("👁️ Data Monitor")
-    st.markdown("Real-time monitoring of Azure DevOps data files and changes")
-    
-    # Initialize session state for monitoring
-    if 'monitor_active' not in st.session_state:
-        st.session_state.monitor_active = False
-    if 'monitor_observer' not in st.session_state:
-        st.session_state.monitor_observer = None
-    if 'monitor_handler' not in st.session_state:
-        st.session_state.monitor_handler = None
-    
-    # Monitor controls
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        data_directory = st.text_input(
-            "Data Directory to Monitor:",
-            value="./data",
-            help="Directory path to monitor for Azure DevOps data files"
-        )
-    
-    with col2:
-        if st.button("🚀 Start Monitor", disabled=st.session_state.monitor_active):
-            try:
-                def data_change_callback(file_info):
-                    """Callback for data changes"""
-                    # Store the change in session state for display
-                    if 'recent_changes' not in st.session_state:
-                        st.session_state.recent_changes = []
-                    
-                    st.session_state.recent_changes.append(file_info)
-                    # Keep only last 50 changes
-                    if len(st.session_state.recent_changes) > 50:
-                        st.session_state.recent_changes = st.session_state.recent_changes[-50:]
-                
-                observer, handler = start_monitoring(data_directory, data_change_callback)
-                st.session_state.monitor_observer = observer
-                st.session_state.monitor_handler = handler
-                st.session_state.monitor_active = True
-                st.success(f"✅ Monitor started for directory: {data_directory}")
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Failed to start monitor: {str(e)}")
-    
-    with col3:
-        if st.button("🛑 Stop Monitor", disabled=not st.session_state.monitor_active):
-            try:
-                if st.session_state.monitor_observer:
-                    stop_monitoring(st.session_state.monitor_observer)
-                    st.session_state.monitor_observer = None
-                    st.session_state.monitor_handler = None
-                    st.session_state.monitor_active = False
-                    st.success("✅ Monitor stopped")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"❌ Failed to stop monitor: {str(e)}")
-    
-    # Monitor status
-    if st.session_state.monitor_active:
-        st.success(f"🟢 **Monitor Active** - Watching: {data_directory}")
-    else:
-        st.info("🔴 **Monitor Inactive** - Click 'Start Monitor' to begin watching for file changes")
-    
-    # Monitoring statistics
-    st.subheader("📊 Monitoring Statistics")
-    
-    if st.session_state.monitor_handler:
-        try:
-            stats = st.session_state.monitor_handler.get_monitoring_stats()
-            
-            if 'error' not in stats:
-                col1, col2, col3, col4 = st.columns(4)
-                
-                with col1:
-                    st.metric("Total Events", stats['total_events'])
-                
-                with col2:
-                    st.metric("File Types", len(stats['file_types']))
-                
-                with col3:
-                    st.metric("Data Sources", len(stats['data_sources']))
-                
-                with col4:
-                    recent_count = len(stats['recent_events'])
-                    st.metric("Recent Events", recent_count)
-                
-                # File types breakdown
-                if stats['file_types']:
-                    st.subheader("📁 File Types Monitored")
-                    file_types_df = pd.DataFrame(list(stats['file_types'].items()), columns=['File Type', 'Count'])
-                    
-                    fig_file_types = px.pie(
-                        file_types_df,
-                        values='Count',
-                        names='File Type',
-                        title="File Types Distribution",
-                        color_discrete_sequence=PASTEL_COLORS['categories']
-                    )
-                    fig_file_types.update_layout(
-                        plot_bgcolor='rgba(0,0,0,0)',
-                        paper_bgcolor='rgba(0,0,0,0)',
-                        font=dict(size=12),
-                        title_font_size=16
-                    )
-                    st.plotly_chart(fig_file_types, use_container_width=True)
-                
-                # Data sources breakdown
-                if stats['data_sources'] and len([k for k in stats['data_sources'].keys() if k != 'unknown']) > 0:
-                    st.subheader("🎯 Data Sources")
-                    data_sources_df = pd.DataFrame(list(stats['data_sources'].items()), columns=['Data Source', 'Count'])
-                    data_sources_df = data_sources_df[data_sources_df['Data Source'] != 'unknown']
-                    
-                    if not data_sources_df.empty:
-                        fig_data_sources = px.bar(
-                            data_sources_df,
-                            x='Data Source',
-                            y='Count',
-                            title="Data Sources Detected",
-                            color='Count',
-                            color_continuous_scale=PASTEL_COLORS['primary']
-                        )
-                        fig_data_sources.update_layout(
-                            plot_bgcolor='rgba(0,0,0,0)',
-                            paper_bgcolor='rgba(0,0,0,0)',
-                            font=dict(size=12),
-                            title_font_size=16,
-                            showlegend=False
-                        )
-                        st.plotly_chart(fig_data_sources, use_container_width=True)
-            else:
-                st.error(f"Error getting monitoring stats: {stats['error']}")
-                
-        except Exception as e:
-            st.error(f"Error displaying monitoring statistics: {str(e)}")
-    else:
-        st.info("Start the monitor to see statistics")
-    
-    # Recent changes
-    st.subheader("🔄 Recent File Changes")
-    
-    if 'recent_changes' in st.session_state and st.session_state.recent_changes:
-        # Display recent changes
-        for i, change in enumerate(reversed(st.session_state.recent_changes[-10:])):  # Show last 10
-            with st.expander(f"{change['event_type'].upper()}: {change['file_name']} - {change['timestamp'][:19]}"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.write(f"**File:** {change['file_name']}")
-                    st.write(f"**Type:** {change['file_extension']}")
-                    st.write(f"**Size:** {change['file_size']} bytes")
-                    st.write(f"**Event:** {change['event_type']}")
-                
-                with col2:
-                    if 'content_type' in change:
-                        st.write(f"**Content Type:** {change['content_type']}")
-                    if 'record_count' in change:
-                        st.write(f"**Records:** {change['record_count']}")
-                    if 'data_source' in change:
-                        st.write(f"**Data Source:** {change['data_source']}")
-                    if 'work_items' in change:
-                        st.write(f"**Work Items:** {change['work_items']}")
-        
-        # Clear changes button
-        if st.button("🗑️ Clear Change History"):
-            st.session_state.recent_changes = []
-            st.rerun()
-    else:
-        st.info("No recent file changes detected. Start the monitor and add/modify files in the monitored directory to see changes here.")
-    
-    # Instructions
-    st.subheader("📋 How to Use Data Monitor")
-    st.markdown("""
-    **Getting Started:**
-    1. **Set Directory**: Specify the directory path to monitor (default: `./data`)
-    2. **Start Monitor**: Click 'Start Monitor' to begin watching for file changes
-    3. **Monitor Activity**: View real-time statistics and recent file changes
-    4. **Stop Monitor**: Click 'Stop Monitor' when done
-    
-    **Monitored File Types:**
-    - 📄 **JSON files** (.json) - Azure DevOps API responses
-    - 📊 **CSV files** (.csv) - Exported work item data
-    - 📈 **Excel files** (.xlsx, .xls) - Spreadsheet data
-    - 📝 **Text files** (.txt) - Log files and reports
-    
-    **Features:**
-    - 🔍 **Smart Detection**: Automatically identifies Azure DevOps data files
-    - 📊 **Content Analysis**: Extracts metadata like record counts and data types
-    - 🕒 **Real-time Updates**: Shows file changes as they happen
-    - 📈 **Statistics**: Track file types, data sources, and activity patterns
-    - 🔄 **Change History**: View recent file modifications with details
-    
-    **Use Cases:**
-    - Monitor Azure DevOps data exports and imports
-    - Track changes to work item data files
-    - Detect when new sprint data becomes available
-    - Monitor automated data processing workflows
-    """)
 
 if __name__ == "__main__":
     main()
