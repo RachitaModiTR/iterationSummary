@@ -9,9 +9,20 @@ import base64
 from datetime import datetime, timedelta
 import os
 from config import AZURE_DEVOPS_CONFIG, COMPLETED_STATES, WORK_ITEM_TYPES, SPRINT_CONFIG
-from azure_data_monitor import AzureDataMonitor, start_monitoring, stop_monitoring
 from email_notifier import SprintChangeNotifier
 import threading
+
+# Optional imports for monitoring features
+try:
+    from azure_data_monitor import AzureDataMonitor, start_monitoring, stop_monitoring
+    MONITORING_AVAILABLE = True
+except ImportError:
+    MONITORING_AVAILABLE = False
+    # Create dummy functions if monitoring is not available
+    def start_monitoring(*args, **kwargs):
+        return None, None
+    def stop_monitoring(*args, **kwargs):
+        pass
 
 # Page configuration
 st.set_page_config(
@@ -468,56 +479,81 @@ class AzureDevOpsDashboard:
         return pd.DataFrame(processed_items)
     
     def categorize_work_item(self, title, work_type, tags=""):
-        """Categorize work item based on title, type, and tags"""
+        """Categorize work item based on title, type, and tags into 5 main categories: Frontend, Backend, UX, Bug, QA"""
         title_lower = title.lower()
         tags_lower = tags.lower() if tags else ""
         
+        # Bug category - highest priority
         if work_type == 'Bug':
             return 'Bug'
-        elif work_type == 'Investigate':
-            return 'Investigate'
         
-        # Check tags first for UXE priority - if UXE tag exists, categorize as UX
+        # UX category - check UXE tags first (highest priority for UX), then analyze title
         if 'uxe' in tags_lower:
             return 'UX'
         
-        # UX keywords - check in title (highest priority after tags)
-        ux_keywords = ['ux ', 'user experience', 'usability', 'user interface design', 
-                       'interaction design', 'user research', 'wireframe', 'mockup', 'prototype']
+        # Enhanced UX keywords - comprehensive list for UX work identification
+        ux_keywords = [
+            'ux ', 'user experience', 'usability', 'user interface design', 
+            'interaction design', 'user research', 'wireframe', 'mockup', 'prototype',
+            'user journey', 'persona', 'accessibility', 'user testing', 'design system',
+            'visual design', 'information architecture', 'user flow', 'design pattern',
+            'user story mapping', 'design thinking', 'user-centered', 'human-computer interaction'
+        ]
         
-        # Frontend keywords
-        frontend_keywords = ['frontend', 'fe ', 'ui', 'button', 'screen', 'window', 'tab', 'grid', 
-                           'upload', 'branding', 'text', 'alert', 'breadcrumb', 'scroll', 'menu', 
-                           'welcome', 'settings', 'angular', 'saffron', 'component']
-        
-        # Backend keywords
-        backend_keywords = ['backend', 'api', 'service', 'endpoint', 'lambda', 'aws', 'database', 
-                          'postgres', 'server', 'deprecate', 'ultratax', 'taxassistant', 'workflow', 
-                          'metric', 'email']
-        
-        # SQA keywords
-        sqa_keywords = ['sqa', 'software quality', 'quality assurance', 'qa engineer', 'qa lead']
-        
-        # Check UX keywords in title (after tag check)
+        # Check UX keywords in title
         for keyword in ux_keywords:
             if keyword in title_lower:
                 return 'UX'
         
-        # Check SQA keywords second
-        for keyword in sqa_keywords:
-            if keyword in title_lower:
-                return 'SQA'
+        # QA category - comprehensive quality assurance keywords
+        qa_keywords = [
+            'qa', 'quality assurance', 'testing', 'test', 'sqa', 'software quality',
+            'qa engineer', 'qa lead', 'test case', 'test plan', 'automation test',
+            'regression test', 'integration test', 'unit test', 'performance test',
+            'load test', 'security test', 'acceptance test', 'validation', 'verification'
+        ]
         
-        # Then check other categories
+        # Check QA keywords
+        for keyword in qa_keywords:
+            if keyword in title_lower:
+                return 'QA'
+        
+        # Frontend keywords - comprehensive list for frontend work
+        frontend_keywords = [
+            'frontend', 'front-end', 'fe ', 'ui', 'user interface', 'button', 'screen', 
+            'window', 'tab', 'grid', 'upload', 'branding', 'text', 'alert', 'breadcrumb', 
+            'scroll', 'menu', 'welcome', 'settings', 'angular', 'saffron', 'component',
+            'react', 'vue', 'javascript', 'typescript', 'css', 'html', 'scss', 'sass',
+            'bootstrap', 'material-ui', 'responsive', 'mobile', 'web app', 'spa',
+            'client-side', 'browser', 'dom', 'jquery', 'ajax', 'form', 'modal',
+            'dropdown', 'navigation', 'header', 'footer', 'sidebar', 'layout'
+        ]
+        
+        # Backend keywords - comprehensive list for backend work
+        backend_keywords = [
+            'backend', 'back-end', 'api', 'service', 'endpoint', 'lambda', 'aws', 
+            'database', 'postgres', 'server', 'deprecate', 'ultratax', 'taxassistant', 
+            'workflow', 'metric', 'email', 'microservice', 'rest', 'graphql', 'sql',
+            'nosql', 'mongodb', 'redis', 'cache', 'queue', 'job', 'cron', 'batch',
+            'authentication', 'authorization', 'security', 'encryption', 'token',
+            'middleware', 'framework', 'spring', 'node.js', 'python', 'java',
+            'docker', 'kubernetes', 'deployment', 'infrastructure', 'cloud',
+            'integration', 'webhook', 'message', 'event', 'stream'
+        ]
+        
+        # Check Frontend keywords
         for keyword in frontend_keywords:
             if keyword in title_lower:
                 return 'Frontend'
         
+        # Check Backend keywords
         for keyword in backend_keywords:
             if keyword in title_lower:
                 return 'Backend'
         
-        return 'Other'
+        # Default to Frontend if no specific category is identified
+        # This assumes most unclassified work items are likely frontend-related
+        return 'Frontend'
 
 def main():
     st.title("🚀 Azure DevOps Sprint Dashboard")

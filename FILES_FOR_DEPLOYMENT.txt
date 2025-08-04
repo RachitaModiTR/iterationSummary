@@ -7,11 +7,12 @@ ESSENTIAL FILES (Must Have):
 3. config.py
 4. requirements.txt
 5. .streamlit/config.toml
+6. runtime.txt
 
 SUPPORTING FILES (Recommended):
-6. email_notifier.py
-7. azure_data_monitor.py
-8. .gitignore
+7. email_notifier.py
+8. azure_data_monitor.py
+9. .gitignore
 
 DEPLOYMENT STEPS:
 ================
