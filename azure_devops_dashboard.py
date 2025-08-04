@@ -1566,17 +1566,34 @@ def render_burndown_tab(df, completed_df):
         st.warning("No data available for burndown analysis.")
         return
     
-    # Define sprint dates based on configuration
-    # Sprint: 2025_S15_Jul16-Jul29 (July 16-29, 2025)
-    sprint_start_date = datetime(2025, 7, 16).date()
-    sprint_end_date = datetime(2025, 7, 29).date()
-    
-    # Get selected team from session state or default
+    # Get selected sprint from session state or default
+    current_sprint = st.session_state.get('selected_sprint', '2025_S15_Jul16-Jul29')
     current_team = st.session_state.get('selected_team', 'ADGE-Prep')
+    
+    # Define sprint dates based on selected sprint
+    sprint_date_mapping = {
+        "2025_S14_Jul02-Jul15": (datetime(2025, 7, 2).date(), datetime(2025, 7, 15).date()),
+        "2025_S15_Jul16-Jul29": (datetime(2025, 7, 16).date(), datetime(2025, 7, 29).date()),
+        "2025_S16_Jul30-Aug12": (datetime(2025, 7, 30).date(), datetime(2025, 8, 12).date()),
+        "2025_S17_Aug13-Aug26": (datetime(2025, 8, 13).date(), datetime(2025, 8, 26).date())
+    }
+    
+    sprint_start_date, sprint_end_date = sprint_date_mapping.get(current_sprint, 
+        (datetime(2025, 7, 16).date(), datetime(2025, 7, 29).date()))
+    
+    # Human-readable sprint period mapping
+    sprint_period_mapping = {
+        "2025_S14_Jul02-Jul15": "July 2-15, 2025",
+        "2025_S15_Jul16-Jul29": "July 16-29, 2025",
+        "2025_S16_Jul30-Aug12": "July 30 - August 12, 2025",
+        "2025_S17_Aug13-Aug26": "August 13-26, 2025"
+    }
+    
+    sprint_period = sprint_period_mapping.get(current_sprint, "Unknown Sprint Period")
     
     # Display sprint information
     st.info(f"""
-    **Sprint Period**: July 16-29, 2025 (2025_S15_Jul16-Jul29)  
+    **Sprint Period**: {sprint_period} ({current_sprint})  
     **Duration**: {(sprint_end_date - sprint_start_date).days + 1} days  
     **Team**: {current_team}
     """)
@@ -2035,8 +2052,14 @@ def render_detailed_view_tab(df):
         )
         
         if display_columns:
-            # Format the dataframe for display
+            # Format the dataframe for display with clickable work item links
             display_df = filtered_df[display_columns].copy()
+            
+            # Add clickable links for work item IDs
+            if 'id' in display_columns:
+                display_df['id'] = display_df['id'].apply(
+                    lambda x: f'<a href="https://dev.azure.com/tr-tax/TaxProf/_workitems/edit/{x}" target="_blank">{x}</a>'
+                )
             
             # Format cycle time
             if 'cycle_time_days' in display_columns:
@@ -2050,7 +2073,8 @@ def render_detailed_view_tab(df):
                     lambda x: x[:80] + "..." if len(x) > 80 else x
                 )
             
-            st.dataframe(display_df, use_container_width=True)
+            # Display with HTML links enabled
+            st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
             
             # Export functionality
             if st.button("📥 Export to CSV"):
@@ -2103,7 +2127,7 @@ def render_recent_changes_tab(df, pat_token):
             change_summary = get_brief_change_summary(revision_history)
             
             summary_data.append({
-                'ID': item['id'],
+                'ID': f'<a href="https://dev.azure.com/tr-tax/TaxProf/_workitems/edit/{item["id"]}" target="_blank">{item["id"]}</a>',
                 'Title': item['title'][:50] + "..." if len(item['title']) > 50 else item['title'],
                 'Type': item['type'],
                 'State': item['state'],
@@ -2113,7 +2137,7 @@ def render_recent_changes_tab(df, pat_token):
             })
     
     summary_df = pd.DataFrame(summary_data)
-    st.table(summary_df)
+    st.markdown(summary_df.to_html(escape=False, index=False), unsafe_allow_html=True)
     
     # Detailed analysis for each item
     st.subheader("🔍 Detailed Change Analysis")
