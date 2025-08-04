@@ -448,10 +448,11 @@ class AzureDevOpsDashboard:
             "query": f"""
             SELECT [System.Id], [System.Title], [System.WorkItemType], [System.State], 
                    [System.AssignedTo], [Microsoft.VSTS.Scheduling.StoryPoints], 
-                   [System.CreatedDate], [Microsoft.VSTS.Common.StateChangeDate],
+                   [System.CreatedDate], [System.ChangedDate], [Microsoft.VSTS.Common.StateChangeDate],
                    [System.IterationPath], [System.AreaPath], [Microsoft.VSTS.Common.ActivatedDate],
                    [Microsoft.VSTS.Common.ResolvedDate], [Microsoft.VSTS.Common.ClosedDate],
-                   [System.Tags]
+                   [System.Tags], [Microsoft.VSTS.Common.ActivatedBy], [Microsoft.VSTS.Common.ResolvedBy],
+                   [Microsoft.VSTS.Common.ClosedBy], [System.Reason]
             FROM WorkItems 
             WHERE [System.IterationPath] = '{iteration_path}'
             AND [System.AreaPath] UNDER '{area_path}'
@@ -494,12 +495,15 @@ class AzureDevOpsDashboard:
             assignee = fields.get('System.AssignedTo', {})
             assignee_name = assignee.get('displayName', 'Unassigned') if assignee else 'Unassigned'
             
-            # Calculate cycle time
+            # Calculate cycle time with fallback approach
             cycle_time_days = None
             activated_date = fields.get('Microsoft.VSTS.Common.ActivatedDate', '')
             resolved_date = fields.get('Microsoft.VSTS.Common.ResolvedDate', '')
             closed_date = fields.get('Microsoft.VSTS.Common.ClosedDate', '')
+            created_date = fields.get('System.CreatedDate', '')
+            state_change_date = fields.get('Microsoft.VSTS.Common.StateChangeDate', '')
             
+            # Primary approach: Use ActivatedDate to ResolvedDate/ClosedDate
             if activated_date and (resolved_date or closed_date):
                 try:
                     activated_dt = datetime.fromisoformat(activated_date.replace('Z', '+00:00'))
@@ -513,6 +517,7 @@ class AzureDevOpsDashboard:
                         cycle_time_days = (completion_dt - activated_dt).days
                 except:
                     cycle_time_days = None
+            
             
             # Extract tags
             tags = fields.get('System.Tags', '') or ''
@@ -1462,38 +1467,315 @@ def render_cycle_time_tab(completed_df):
     col1, col2 = st.columns(2)
     
     with col1:
-        # Performance distribution chart - fix data mapping
-        if not performance_summary.empty:
-            # Create DataFrame for proper plotting
-            performance_data = pd.DataFrame({
-                'Performance Category': performance_summary.index,
-                'Number of Items': performance_summary.values
-            })
+        # Performance distribution chart - use the same data as performance breakdown
+        if not cycle_time_df.empty:
+            # Create performance categories using the same logic as the breakdown
+            fast_items = len(cycle_time_df[cycle_time_df['cycle_time_days'] <= 7])
+            normal_items = len(cycle_time_df[(cycle_time_df['cycle_time_days'] > 7) & (cycle_time_df['cycle_time_days'] <= 14)])
+            slow_items = len(cycle_time_df[cycle_time_df['cycle_time_days'] > 14])
             
-            fig_performance = px.bar(
-                performance_data,
-                x='Performance Category',
-                y='Number of Items',
-                title="Work Items by Cycle Time Performance",
-                color='Performance Category',
-                color_discrete_map={
-                    'Fast (≤7 days)': PASTEL_COLORS['performance'][0],
-                    'Normal (8-14 days)': PASTEL_COLORS['performance'][1],
-                    'Slow (>14 days)': PASTEL_COLORS['performance'][2]
-                }
-            )
-            fig_performance.update_layout(
-                showlegend=False,
-                plot_bgcolor='rgba(0,0,0,0)',
-                paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(size=12),
-                title_font_size=16,
-                xaxis_title="Performance Category",
-                yaxis_title="Number of Items"
-            )
-            st.plotly_chart(fig_performance, use_container_width=True)
+            # Debug information
+            st.write(f"Debug: Fast={fast_items}, Normal={normal_items}, Slow={slow_items}, Total cycle_time_df={len(cycle_time_df)}")
+            
+            # Check if we have any data to plot
+            total_performance_items = fast_items + normal_items + slow_items
+            
+            if total_performance_items > 0:
+                # Always include all categories for proper chart display
+                categories = ['Fast (≤7 days)', 'Normal (8-14 days)', 'Slow (>14 days)']
+                counts = [fast_items, normal_items, slow_items]
+                
+                # Create the chart data
+                performance_data = pd.DataFrame({
+                    'Performance Category': categories,
+                    'Number of Items': counts
+                })
+                
+                # Create the chart
+                fig_performance = px.bar(
+                    performance_data,
+                    x='Performance Category',
+                    y='Number of Items',
+                    title="Work Items by Cycle Time Performance",
+                    color='Performance Category',
+                    color_discrete_map={
+                        'Fast (≤7 days)': PASTEL_COLORS['performance'][0],  # Light green
+                        'Normal (8-14 days)': PASTEL_COLORS['performance'][1],  # Khaki
+                        'Slow (>14 days)': PASTEL_COLORS['performance'][2]  # Light pink
+                    }
+                )
+                fig_performance.update_layout(
+                    showlegend=False,
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=12),
+                    title_font_size=16,
+                    xaxis_title="Performance Category",
+                    yaxis_title="Number of Items",
+                    yaxis=dict(range=[0, max(counts) + 1])
+                )
+                st.plotly_chart(fig_performance, use_container_width=True)
+            else:
+                st.warning("No items with valid cycle time data to display in performance chart")
+                st.info("This could happen if:")
+                st.info("- Work items are missing activation dates")
+                st.info("- Work items are missing completion dates (resolved/closed)")
+                st.info("- Items were completed outside the sprint period")
         else:
-            st.info("No performance data available for chart display")
+            st.warning("No cycle time data available for performance analysis")
+            st.info("Cycle time requires both activation date and completion date")
+        
+        # Add table of work items considered for cycle time performance analysis
+        st.subheader("📋 Work Items Considered for Cycle Time Performance Analysis")
+        
+        if not cycle_time_df.empty:
+            # Create a display table with relevant columns including date fields
+            display_df = cycle_time_df[['id', 'title', 'type', 'assignee', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days', 'performance_category']].copy()
+            display_df = display_df.sort_values('cycle_time_days', ascending=False)
+            
+            # Format the table for better display
+            display_df['title'] = display_df['title'].apply(lambda x: x[:50] + "..." if len(x) > 50 else x)
+            display_df['cycle_time_days'] = display_df['cycle_time_days'].apply(lambda x: f"{x} days")
+            
+            # Format date columns to show only date part (YYYY-MM-DD)
+            display_df['activated_date'] = display_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
+            display_df['resolved_date'] = display_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
+            display_df['closed_date'] = display_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
+            
+            # Rename columns for display
+            display_df.columns = ['Work Item ID', 'Title', 'Type', 'Assignee', 'Activated Date', 'Resolved Date', 'Closed Date', 'Cycle Time', 'Performance Category']
+            
+            # Display all items without pagination - set height to show all rows
+            st.dataframe(display_df, use_container_width=True, hide_index=True, height=min(800, len(display_df) * 35 + 50))
+            
+            st.info(f"📊 **Summary**: Showing all {len(display_df)} work items with valid cycle time data used for performance analysis")
+            
+            # Add additional summary information
+            st.markdown(f"""
+            **📈 Data Breakdown:**
+            - **Total Work Items in Sprint**: {len(completed_df)} completed items
+            - **Items with Cycle Time Data**: {len(display_df)} items ({len(display_df)/len(completed_df)*100:.1f}% of completed items)
+            - **Items Missing Cycle Time**: {len(completed_df) - len(display_df)} items (missing activation or completion dates)
+            """)
+            
+            # Debug table for items missing cycle time data
+            missing_cycle_time_items = completed_df[completed_df['cycle_time_days'].isna()]
+            
+            if not missing_cycle_time_items.empty:
+                st.subheader("🔍 Debug: Items Missing Cycle Time Data")
+                st.markdown(f"**{len(missing_cycle_time_items)} items are missing cycle time data. Here's why:**")
+                
+                # DETAILED DEBUGGING: Show raw date values and parsing attempts
+                st.markdown("### 🔬 Raw Date Field Analysis:")
+                
+                debug_details = []
+                for _, item in missing_cycle_time_items.iterrows():
+                    # Get raw date values
+                    activated_raw = item.get('activated_date', '')
+                    resolved_raw = item.get('resolved_date', '')
+                    closed_raw = item.get('closed_date', '')
+                    created_raw = item.get('created_date', '')
+                    
+                    # Test date parsing
+                    activated_parsed = "❌ MISSING"
+                    resolved_parsed = "❌ MISSING"
+                    closed_parsed = "❌ MISSING"
+                    created_parsed = "❌ MISSING"
+                    
+                    # Try parsing activated_date
+                    if activated_raw:
+                        try:
+                            activated_dt = datetime.fromisoformat(activated_raw.replace('Z', '+00:00'))
+                            activated_parsed = f"✅ {activated_dt.strftime('%Y-%m-%d %H:%M')}"
+                        except Exception as e:
+                            activated_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
+                    
+                    # Try parsing resolved_date
+                    if resolved_raw:
+                        try:
+                            resolved_dt = datetime.fromisoformat(resolved_raw.replace('Z', '+00:00'))
+                            resolved_parsed = f"✅ {resolved_dt.strftime('%Y-%m-%d %H:%M')}"
+                        except Exception as e:
+                            resolved_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
+                    
+                    # Try parsing closed_date
+                    if closed_raw:
+                        try:
+                            closed_dt = datetime.fromisoformat(closed_raw.replace('Z', '+00:00'))
+                            closed_parsed = f"✅ {closed_dt.strftime('%Y-%m-%d %H:%M')}"
+                        except Exception as e:
+                            closed_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
+                    
+                    # Try parsing created_date
+                    if created_raw:
+                        try:
+                            created_dt = datetime.fromisoformat(created_raw.replace('Z', '+00:00'))
+                            created_parsed = f"✅ {created_dt.strftime('%Y-%m-%d %H:%M')}"
+                        except Exception as e:
+                            created_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
+                    
+                    # Determine why cycle time failed
+                    cycle_time_failure_reason = "Unknown"
+                    if not activated_raw:
+                        cycle_time_failure_reason = "No activated_date field"
+                    elif "PARSE ERROR" in activated_parsed:
+                        cycle_time_failure_reason = "activated_date parsing failed"
+                    elif not resolved_raw and not closed_raw:
+                        cycle_time_failure_reason = "No completion date (resolved_date or closed_date)"
+                    elif resolved_raw and "PARSE ERROR" in resolved_parsed and closed_raw and "PARSE ERROR" in closed_parsed:
+                        cycle_time_failure_reason = "Both completion dates failed to parse"
+                    elif resolved_raw and "PARSE ERROR" in resolved_parsed and not closed_raw:
+                        cycle_time_failure_reason = "resolved_date parsing failed, no closed_date"
+                    elif closed_raw and "PARSE ERROR" in closed_parsed and not resolved_raw:
+                        cycle_time_failure_reason = "closed_date parsing failed, no resolved_date"
+                    else:
+                        cycle_time_failure_reason = "Logic error - should have worked"
+                    
+                    debug_details.append({
+                        'ID': item['id'],
+                        'Title': item['title'][:30] + "..." if len(item['title']) > 30 else item['title'],
+                        'State': item['state'],
+                        'Activated Raw': str(activated_raw)[:25] + "..." if len(str(activated_raw)) > 25 else str(activated_raw),
+                        'Activated Parsed': activated_parsed,
+                        'Resolved Raw': str(resolved_raw)[:25] + "..." if len(str(resolved_raw)) > 25 else str(resolved_raw),
+                        'Resolved Parsed': resolved_parsed,
+                        'Closed Raw': str(closed_raw)[:25] + "..." if len(str(closed_raw)) > 25 else str(closed_raw),
+                        'Closed Parsed': closed_parsed,
+                        'Failure Reason': cycle_time_failure_reason
+                    })
+                    # Store full raw values for parsing (don't truncate)
+                    debug_details.append({
+                        'ID': item['id'],
+                        'Title': item['title'][:30] + "..." if len(item['title']) > 30 else item['title'],
+                        'State': item['state'],
+                        'Activated Raw': str(activated_raw) if activated_raw else 'Empty',
+                        'Activated Parsed': activated_parsed,
+                        'Resolved Raw': str(resolved_raw) if resolved_raw else 'Empty', 
+                        'Resolved Parsed': resolved_parsed,
+                        'Closed Raw': str(closed_raw) if closed_raw else 'Empty',
+                        'Closed Parsed': closed_parsed,
+                        'Failure Reason': cycle_time_failure_reason
+                    })
+                
+                # Display the detailed debug table
+                debug_details_df = pd.DataFrame(debug_details)
+                st.dataframe(debug_details_df, use_container_width=True, hide_index=True, height=min(600, len(debug_details) * 35 + 50))
+                
+                # Summary of failure reasons
+                st.markdown("### 📊 Failure Reason Summary:")
+                failure_reasons = pd.Series([item['Failure Reason'] for item in debug_details]).value_counts()
+                for reason, count in failure_reasons.items():
+                    st.markdown(f"- **{reason}**: {count} items ({count/len(debug_details)*100:.1f}%)")
+                
+                # Create debug table with detailed date information
+                debug_df = missing_cycle_time_items[['id', 'title', 'type', 'assignee', 'state', 'created_date', 'activated_date', 'resolved_date', 'closed_date']].copy()
+                
+                # Format the debug table for better analysis
+                debug_df['title'] = debug_df['title'].apply(lambda x: x[:40] + "..." if len(x) > 40 else x)
+                debug_df['created_date'] = debug_df['created_date'].apply(lambda x: x[:10] if x else 'Missing')
+                debug_df['activated_date'] = debug_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
+                debug_df['resolved_date'] = debug_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
+                debug_df['closed_date'] = debug_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
+                
+                # Add diagnosis column
+                def diagnose_missing_cycle_time(row):
+                    reasons = []
+                    if not row['activated_date'] or row['activated_date'] == 'Missing':
+                        reasons.append("No activation date")
+                    if (not row['resolved_date'] or row['resolved_date'] == 'Missing') and (not row['closed_date'] or row['closed_date'] == 'Missing'):
+                        reasons.append("No completion date")
+                    if not reasons:
+                        reasons.append("Date parsing issue")
+                    return "; ".join(reasons)
+                
+                debug_df['Issue Diagnosis'] = debug_df.apply(diagnose_missing_cycle_time, axis=1)
+                
+                # Rename columns for display
+                debug_df.columns = ['Work Item ID', 'Title', 'Type', 'Assignee', 'State', 'Created Date', 'Activated Date', 'Resolved Date', 'Closed Date', 'Issue Diagnosis']
+                
+                # Display the debug table
+                st.dataframe(debug_df, use_container_width=True, hide_index=True, height=min(600, len(debug_df) * 35 + 50))
+                
+                # Provide analysis of the missing data
+                st.markdown("### 📊 Missing Data Analysis:")
+                
+                # Count different types of issues
+                no_activation = len(missing_cycle_time_items[missing_cycle_time_items['activated_date'].isna() | (missing_cycle_time_items['activated_date'] == '')])
+                no_completion = len(missing_cycle_time_items[
+                    (missing_cycle_time_items['resolved_date'].isna() | (missing_cycle_time_items['resolved_date'] == '')) &
+                    (missing_cycle_time_items['closed_date'].isna() | (missing_cycle_time_items['closed_date'] == ''))
+                ])
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Missing Activation Date", no_activation, delta=f"{no_activation/len(missing_cycle_time_items)*100:.1f}% of missing items")
+                
+                with col2:
+                    st.metric("Missing Completion Date", no_completion, delta=f"{no_completion/len(missing_cycle_time_items)*100:.1f}% of missing items")
+                
+                with col3:
+                    both_missing = len(missing_cycle_time_items[
+                        (missing_cycle_time_items['activated_date'].isna() | (missing_cycle_time_items['activated_date'] == '')) &
+                        ((missing_cycle_time_items['resolved_date'].isna() | (missing_cycle_time_items['resolved_date'] == '')) &
+                         (missing_cycle_time_items['closed_date'].isna() | (missing_cycle_time_items['closed_date'] == '')))
+                    ])
+                    st.metric("Missing Both Dates", both_missing, delta=f"{both_missing/len(missing_cycle_time_items)*100:.1f}% of missing items")
+                
+                # Recommendations
+                st.markdown("### 💡 Recommendations to Improve Cycle Time Tracking:")
+                
+                recommendations = []
+                
+                if no_activation > 0:
+                    recommendations.append(f"- **{no_activation} items missing activation dates**: Ensure work items are moved to 'Active' state when work begins")
+                
+                if no_completion > 0:
+                    recommendations.append(f"- **{no_completion} items missing completion dates**: Ensure work items are properly resolved/closed when work finishes")
+                
+                if both_missing > 0:
+                    recommendations.append(f"- **{both_missing} items missing both dates**: These items may have bypassed normal workflow states")
+                
+                recommendations.extend([
+                    "- **Workflow Training**: Ensure team follows consistent state transitions (New → Active → Resolved/Closed)",
+                    "- **Process Review**: Consider updating Azure DevOps workflow to automatically populate date fields",
+                    "- **Regular Monitoring**: Check for missing dates during sprint to address issues early"
+                ])
+                
+                for rec in recommendations:
+                    st.markdown(rec)
+                
+                # Show state distribution of missing items
+                st.markdown("### 🔄 State Distribution of Items Missing Cycle Time:")
+                missing_states = missing_cycle_time_items['state'].value_counts()
+                
+                states_info = []
+                for state, count in missing_states.items():
+                    percentage = (count / len(missing_cycle_time_items) * 100)
+                    states_info.append(f"- **{state}**: {count} items ({percentage:.1f}%)")
+                
+                for info in states_info:
+                    st.markdown(info)
+                
+                if 'Closed' in missing_states or 'Resolved' in missing_states:
+                    st.warning("⚠️ **Note**: Some completed items are missing cycle time data, indicating workflow issues that should be addressed.")
+        else:
+            st.warning("No work items with valid cycle time data available for analysis")
+            
+            # Show all completed items for reference
+            if not completed_df.empty:
+                st.markdown("**All completed items (for reference):**")
+                reference_df = completed_df[['id', 'title', 'type', 'assignee', 'state', 'activated_date', 'resolved_date', 'closed_date']].copy()
+                reference_df['title'] = reference_df['title'].apply(lambda x: x[:50] + "..." if len(x) > 50 else x)
+                reference_df['activated_date'] = reference_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
+                reference_df['resolved_date'] = reference_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
+                reference_df['closed_date'] = reference_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
+                
+                # Rename columns for display
+                reference_df.columns = ['ID', 'Title', 'Type', 'Assignee', 'State', 'Activated Date', 'Resolved Date', 'Closed Date']
+                
+                st.dataframe(reference_df, use_container_width=True, hide_index=True)
+                st.info("💡 Items need both activation date and completion date (resolved/closed) to calculate cycle time")
     
     with col2:
         # Performance metrics
@@ -2086,47 +2368,46 @@ def render_burndown_tab(df, completed_df):
         projected_completion = end_date
         days_beyond_sprint = 0
     
-    # Create the main burndown chart matching the reference image
+    # Create the main burndown chart as column chart with dynamic data
     fig_burndown = go.Figure()
     
-    # Add remaining items as blue bars
+    # Use actual burndown data from the DataFrame
+    # Add remaining work items as blue column bars
     fig_burndown.add_trace(go.Bar(
         x=burndown_df['date'],
         y=burndown_df['remaining_items'],
-        name='Remaining',
-        marker_color='#4A90E2',  # Blue color matching the reference
-        opacity=0.8
+        name='Remaining Work Items',
+        marker_color='#4A90E2',  # Blue color as specified
+        opacity=0.8,
+        width=0.6  # Make bars slightly narrower for better appearance
     ))
     
-    # Add ideal burndown line (gray)
-    sprint_days = len(burndown_df)
-    ideal_burndown = [total_items - (total_items * i / (sprint_days - 1)) for i in range(sprint_days)]
+    # Add burndown line (gray) - showing trend of work completion
     fig_burndown.add_trace(go.Scatter(
         x=burndown_df['date'],
-        y=ideal_burndown,
-        mode='lines',
-        name='Burndown',
-        line=dict(color='#95A5A6', width=3),  # Gray color
+        y=burndown_df['remaining_items'],
+        mode='lines+markers',
+        name='Burndown Line',
+        line=dict(color='#95A5A6', width=3),  # Gray color as specified
+        marker=dict(size=6, color='#95A5A6'),
         yaxis='y'
     ))
     
-    # Add total scope line (orange)
-    # For now, showing constant scope, but this could be dynamic based on scope changes
-    total_scope_line = [total_items] * len(burndown_df)
+    # Add total scope line (orange) - showing initial planned work items
     fig_burndown.add_trace(go.Scatter(
         x=burndown_df['date'],
-        y=total_scope_line,
+        y=burndown_df['total_scope_items'],
         mode='lines',
-        name='Total Scope',
-        line=dict(color='#F39C12', width=3),  # Orange color
+        name='Total Scope Line',
+        line=dict(color='#F39C12', width=3, dash='dash'),  # Orange color as specified
         yaxis='y'
     ))
     
-    # Update layout to match the reference image
+    # Update layout for column chart format
     fig_burndown.update_layout(
-        title="Count Burndown",
-        xaxis_title="Date",
-        yaxis_title="Stories Remaining",
+        title="Sprint Burndown Chart - Work Items Progress",
+        xaxis_title="Sprint Dates",
+        yaxis_title="Count of Work Items",
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
         font=dict(size=12),
@@ -2135,19 +2416,22 @@ def render_burndown_tab(df, completed_df):
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.2,
+            y=-0.25,
             xanchor="center",
             x=0.5
         ),
         xaxis=dict(
             tickangle=45,
-            tickformat='%d/%m/%Y'
+            tickformat='%d/%m/%Y',
+            title=f"Sprint Dates ({start_date} to {end_date})"
         ),
         yaxis=dict(
-            title="Stories Remaining",
-            side='left'
+            title="Count of Work Items",
+            side='left',
+            range=[0, total_items + 2]  # Set range from 0 to slightly above total scope
         ),
-        hovermode='x unified'
+        hovermode='x unified',
+        bargap=0.2  # Add gap between bars for better visibility
     )
     
     # Display burndown charts side by side
@@ -2157,42 +2441,44 @@ def render_burndown_tab(df, completed_df):
         st.plotly_chart(fig_burndown, use_container_width=True)
     
     with col2:
-        # Story Points Burndown Chart
+        # Story Points Burndown Chart - Column Chart Format
         fig_burndown_points = go.Figure()
         
-        # Add remaining points as blue bars
+        # Add remaining points as blue column bars
         fig_burndown_points.add_trace(go.Bar(
             x=burndown_df['date'],
             y=burndown_df['remaining_points'],
-            name='Remaining Points',
-            marker_color='#4A90E2',
-            opacity=0.8
+            name='Remaining Story Points',
+            marker_color='#4A90E2',  # Blue color matching work items chart
+            opacity=0.8,
+            width=0.6  # Make bars slightly narrower for better appearance
         ))
         
-        # Add ideal burndown line for points
-        ideal_burndown_points = [total_story_points - (total_story_points * i / (sprint_days - 1)) for i in range(sprint_days)]
+        # Add burndown line (gray) - showing trend of story points completion
         fig_burndown_points.add_trace(go.Scatter(
             x=burndown_df['date'],
-            y=ideal_burndown_points,
-            mode='lines',
-            name='Ideal Burndown',
-            line=dict(color='#95A5A6', width=3)
+            y=burndown_df['remaining_points'],
+            mode='lines+markers',
+            name='Burndown Line',
+            line=dict(color='#95A5A6', width=3),  # Gray color matching work items chart
+            marker=dict(size=6, color='#95A5A6'),
+            yaxis='y'
         ))
         
-        # Add total scope line for points
-        total_scope_points_line = [total_story_points] * len(burndown_df)
+        # Add total scope line for points (orange)
         fig_burndown_points.add_trace(go.Scatter(
             x=burndown_df['date'],
-            y=total_scope_points_line,
+            y=burndown_df['total_scope_points'],
             mode='lines',
-            name='Total Scope',
-            line=dict(color='#F39C12', width=3)
+            name='Total Scope Line',
+            line=dict(color='#F39C12', width=3, dash='dash'),  # Orange color matching work items chart
+            yaxis='y'
         ))
         
         fig_burndown_points.update_layout(
-            title="Story Points Burndown",
-            xaxis_title="Date",
-            yaxis_title="Story Points Remaining",
+            title="Sprint Burndown Chart - Story Points Progress",
+            xaxis_title="Sprint Dates",
+            yaxis_title="Count of Story Points",
             plot_bgcolor='rgba(0,0,0,0)',
             paper_bgcolor='rgba(0,0,0,0)',
             font=dict(size=12),
@@ -2201,15 +2487,22 @@ def render_burndown_tab(df, completed_df):
             legend=dict(
                 orientation="h",
                 yanchor="bottom",
-                y=-0.2,
+                y=-0.25,
                 xanchor="center",
                 x=0.5
             ),
             xaxis=dict(
                 tickangle=45,
-                tickformat='%d/%m/%Y'
+                tickformat='%d/%m/%Y',
+                title=f"Sprint Dates ({start_date} to {end_date})"
             ),
-            hovermode='x unified'
+            yaxis=dict(
+                title="Count of Story Points",
+                side='left',
+                range=[0, total_story_points + 2]  # Set range from 0 to slightly above total scope
+            ),
+            hovermode='x unified',
+            bargap=0.2  # Add gap between bars for better visibility
         )
         
         st.plotly_chart(fig_burndown_points, use_container_width=True)
