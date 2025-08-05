@@ -1,16 +1,164 @@
+# Page configuration - MUST be first Streamlit command
 import streamlit as st
+st.set_page_config(
+    page_title="Azure DevOps Sprint Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import numpy as np
 import requests
 import json
 import base64
-from datetime import datetime, timedelta
 import os
-from config import AZURE_DEVOPS_CONFIG, COMPLETED_STATES, WORK_ITEM_TYPES, SPRINT_CONFIG
-from email_notifier import SprintChangeNotifier
 import threading
+from datetime import datetime, timedelta
+
+# Plotly imports with error handling
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError as e:
+    st.error(f"❌ Plotly import failed: {e}")
+    print (f"❌ Plotly import failed: {e}")
+    st.error("Please install plotly: pip install plotly")
+    PLOTLY_AVAILABLE = False
+    # Create dummy functions to prevent errors
+    class DummyPlotly:
+        def __init__(self):
+            pass
+        def pie(self, *args, **kwargs):
+            return None
+        def bar(self, *args, **kwargs):
+            return None
+        def histogram(self, *args, **kwargs):
+            return None
+        def scatter(self, *args, **kwargs):
+            return None
+    
+    class DummyGO:
+        def __init__(self):
+            pass
+        def Figure(self, *args, **kwargs):
+            return None
+        def Pie(self, *args, **kwargs):
+            return None
+        def Bar(self, *args, **kwargs):
+            return None
+        def Scatter(self, *args, **kwargs):
+            return None
+    
+    px = DummyPlotly()
+    go = DummyGO()
+
+# Config imports with error handling
+try:
+    from config import AZURE_DEVOPS_CONFIG, COMPLETED_STATES, WORK_ITEM_TYPES, SPRINT_CONFIG
+except ImportError as e:
+    st.error(f"❌ Config import failed: {e}")
+    # Provide default config
+    AZURE_DEVOPS_CONFIG = {
+        "organization": "tr-tax",
+        "project": "TaxProf"
+    }
+    COMPLETED_STATES = ['Closed', 'Resolved']
+    WORK_ITEM_TYPES = ['User Story', 'Bug', 'Task']
+    SPRINT_CONFIG = {
+        "area_path": "TaxProf\\ADGE\\Prep",
+        "iteration_path": "TaxProf\\2025\\Q3\\2025_S15_Jul16-Jul29"
+    }
+
+# Email notifier import with error handling
+try:
+    from email_notifier import SprintChangeNotifier
+    EMAIL_NOTIFIER_AVAILABLE = True
+except ImportError as e:
+    st.warning(f"⚠️ Email notifier not available: {e}")
+    EMAIL_NOTIFIER_AVAILABLE = False
+    class DummyNotifier:
+        def monitor_and_notify(self, *args, **kwargs):
+            return {'changes_detected': False, 'email_sent': False, 'email_status': 'Email notifier not available'}
+    SprintChangeNotifier = DummyNotifier
+
+# Centralized date parsing functions - all return datetime objects for consistency
+def parse_azure_date_to_datetime(date_str):
+    """Parse Azure DevOps date string and return datetime object normalized to date only"""
+    if not date_str:
+        return None
+    
+    try:
+        # First, try to extract YYYY-MM-DD format directly from the string
+        if len(date_str) >= 10 and date_str[4] == '-' and date_str[7] == '-':
+            date_part = date_str[:10]  # Extract YYYY-MM-DD
+            return datetime.strptime(date_part, '%Y-%m-%d')
+        
+        # Handle various Azure DevOps date formats with full ISO parsing
+        clean_date_str = date_str
+        
+        # Handle fractional seconds by removing them entirely
+        if '.' in clean_date_str and ('Z' in clean_date_str or '+' in clean_date_str):
+            date_part = clean_date_str.split('.')[0]
+            if 'Z' in clean_date_str:
+                clean_date_str = date_part + 'Z'
+            elif '+' in clean_date_str:
+                tz_part = clean_date_str.split('+')[1] if '+' in clean_date_str else '00:00'
+                clean_date_str = date_part + '+' + tz_part
+        
+        # Replace Z with timezone offset for consistent parsing
+        if clean_date_str.endswith('Z'):
+            clean_date_str = clean_date_str.replace('Z', '+00:00')
+        
+        # Parse the datetime and return date part only
+        dt = datetime.fromisoformat(clean_date_str)
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)  # Normalize to date only
+        
+    except Exception:
+        # Final fallback: try various common date formats
+        try:
+            for fmt in ['%Y-%m-%dT%H:%M:%S', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d']:
+                try:
+                    return datetime.strptime(date_str[:19], fmt).replace(hour=0, minute=0, second=0, microsecond=0)
+                except:
+                    continue
+        except Exception:
+            pass
+        return None
+
+def format_date_for_display(date_obj):
+    """Format datetime object for display as YYYY-MM-DD string"""
+    if date_obj is None:
+        return 'Missing'
+    
+    # Handle pandas NaT (Not a Time) values
+    if pd.isna(date_obj):
+        return 'Missing'
+    
+    if isinstance(date_obj, str):
+        # If it's still a string, parse it first
+        date_obj = parse_azure_date_to_datetime(date_obj)
+        if date_obj is None:
+            return 'Invalid Date'
+    
+    try:
+        return date_obj.strftime('%Y-%m-%d')
+    except (ValueError, AttributeError):
+        return 'Invalid Date'
+
+def date_to_string(date_obj):
+    """Convert datetime object to YYYY-MM-DD string for compatibility"""
+    if date_obj is None:
+        return None
+    
+    if isinstance(date_obj, str):
+        # If it's already a string, try to parse and reformat
+        parsed = parse_azure_date_to_datetime(date_obj)
+        return parsed.strftime('%Y-%m-%d') if parsed else None
+    
+    return date_obj.strftime('%Y-%m-%d')
 
 # Optional imports for monitoring features
 try:
@@ -23,14 +171,6 @@ except ImportError:
         return None, None
     def stop_monitoring(*args, **kwargs):
         pass
-
-# Page configuration
-st.set_page_config(
-    page_title="Azure DevOps Sprint Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
 
 # Enhanced CSS for beautiful, professional dashboard styling with full width
 st.markdown("""
@@ -503,20 +643,34 @@ class AzureDevOpsDashboard:
             created_date = fields.get('System.CreatedDate', '')
             state_change_date = fields.get('Microsoft.VSTS.Common.StateChangeDate', '')
             
-            # Primary approach: Use ActivatedDate to ResolvedDate/ClosedDate
-            if activated_date and (resolved_date or closed_date):
+            # Convert all dates to datetime objects using the centralized function
+            activated_date_dt = parse_azure_date_to_datetime(activated_date)
+            resolved_date_dt = parse_azure_date_to_datetime(resolved_date)
+            closed_date_dt = parse_azure_date_to_datetime(closed_date)
+            created_date_dt = parse_azure_date_to_datetime(created_date)
+            
+            # Calculate cycle time using datetime objects (more reliable)
+            cycle_time_days = None
+            
+            # Primary approach: ActivatedDate to ResolvedDate/ClosedDate
+            if activated_date_dt and (resolved_date_dt or closed_date_dt):
                 try:
-                    activated_dt = datetime.fromisoformat(activated_date.replace('Z', '+00:00'))
-                    completion_dt = None
-                    if resolved_date:
-                        completion_dt = datetime.fromisoformat(resolved_date.replace('Z', '+00:00'))
-                    elif closed_date:
-                        completion_dt = datetime.fromisoformat(closed_date.replace('Z', '+00:00'))
+                    completion_dt = resolved_date_dt if resolved_date_dt else closed_date_dt
                     
-                    if completion_dt:
-                        cycle_time_days = (completion_dt - activated_dt).days
-                except:
-                    cycle_time_days = None
+                    if completion_dt and completion_dt >= activated_date_dt:
+                        cycle_time_days = (completion_dt - activated_date_dt).days
+                except Exception:
+                    pass  # Skip if date parsing fails
+            
+            # Fallback approach: CreatedDate to completion if no ActivatedDate
+            if cycle_time_days is None and created_date_dt and (resolved_date_dt or closed_date_dt):
+                try:
+                    completion_dt = resolved_date_dt if resolved_date_dt else closed_date_dt
+                    
+                    if completion_dt and completion_dt >= created_date_dt:
+                        cycle_time_days = (completion_dt - created_date_dt).days
+                except Exception:
+                    pass  # Skip if date parsing fails
             
             
             # Extract tags
@@ -532,10 +686,10 @@ class AzureDevOpsDashboard:
                 'state': fields.get('System.State', ''),
                 'assignee': assignee_name,
                 'story_points': fields.get('Microsoft.VSTS.Scheduling.StoryPoints', 0) or 0,
-                'created_date': fields.get('System.CreatedDate', ''),
-                'activated_date': activated_date,
-                'resolved_date': resolved_date,
-                'closed_date': closed_date,
+                'created_date': parse_azure_date_to_datetime(fields.get('System.CreatedDate', '')),
+                'activated_date': activated_date_dt,
+                'resolved_date': resolved_date_dt,
+                'closed_date': closed_date_dt,
                 'cycle_time_days': cycle_time_days,
                 'category': category,
                 'tags': tags,
@@ -1467,6 +1621,64 @@ def render_cycle_time_tab(completed_df):
     col1, col2 = st.columns(2)
     
     with col1:
+        # COMPREHENSIVE DEBUG SECTION FOR CYCLE TIME PERFORMANCE CHART
+        st.markdown("### 🔍 DEBUG: Cycle Time Performance Chart Data Analysis")
+        
+        # Debug 1: Show raw completed_df info
+        st.write(f"**Total completed items**: {len(completed_df)}")
+        if not completed_df.empty:
+            st.write(f"**Completed items columns**: {list(completed_df.columns)}")
+            
+            # Debug 2: Check cycle_time_days column
+            if 'cycle_time_days' in completed_df.columns:
+                cycle_time_stats = completed_df['cycle_time_days'].describe()
+                st.write(f"**Cycle time stats**: {cycle_time_stats}")
+                
+                # Show items with and without cycle time data
+                items_with_cycle_time = completed_df[completed_df['cycle_time_days'].notna()]
+                items_without_cycle_time = completed_df[completed_df['cycle_time_days'].isna()]
+                
+                st.write(f"**Items WITH cycle time data**: {len(items_with_cycle_time)}")
+                st.write(f"**Items WITHOUT cycle time data**: {len(items_without_cycle_time)}")
+                
+                # Debug 3: Show sample items with cycle time data
+                if not items_with_cycle_time.empty:
+                    st.write("**Sample items WITH cycle time:**")
+                    sample_with = items_with_cycle_time[['id', 'title', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days']].head(3)
+                    st.dataframe(sample_with)
+                    
+                    # Debug 4: Show the actual cycle time values
+                    cycle_times = items_with_cycle_time['cycle_time_days'].tolist()
+                    st.write(f"**Actual cycle time values**: {cycle_times}")
+                    
+                    # Debug 5: Performance categorization
+                    fast_items = len(items_with_cycle_time[items_with_cycle_time['cycle_time_days'] <= 7])
+                    normal_items = len(items_with_cycle_time[(items_with_cycle_time['cycle_time_days'] > 7) & (items_with_cycle_time['cycle_time_days'] <= 14)])
+                    slow_items = len(items_with_cycle_time[items_with_cycle_time['cycle_time_days'] > 14])
+                    
+                    st.write(f"**Performance breakdown**: Fast={fast_items}, Normal={normal_items}, Slow={slow_items}")
+                    
+                    # Debug 6: Show items in each category
+                    if fast_items > 0:
+                        fast_list = items_with_cycle_time[items_with_cycle_time['cycle_time_days'] <= 7]['cycle_time_days'].tolist()
+                        st.write(f"**Fast items cycle times**: {fast_list}")
+                    
+                    if normal_items > 0:
+                        normal_list = items_with_cycle_time[(items_with_cycle_time['cycle_time_days'] > 7) & (items_with_cycle_time['cycle_time_days'] <= 14)]['cycle_time_days'].tolist()
+                        st.write(f"**Normal items cycle times**: {normal_list}")
+                    
+                    if slow_items > 0:
+                        slow_list = items_with_cycle_time[items_with_cycle_time['cycle_time_days'] > 14]['cycle_time_days'].tolist()
+                        st.write(f"**Slow items cycle times**: {slow_list}")
+                
+                # Debug 7: Show sample items WITHOUT cycle time data
+                if not items_without_cycle_time.empty:
+                    st.write("**Sample items WITHOUT cycle time (missing dates):**")
+                    sample_without = items_without_cycle_time[['id', 'title', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days']].head(5)
+                    st.dataframe(sample_without)
+            else:
+                st.error("❌ 'cycle_time_days' column not found in completed_df!")
+        
         # Performance distribution chart - use the same data as performance breakdown
         if not cycle_time_df.empty:
             # Create performance categories using the same logic as the breakdown
@@ -1475,7 +1687,7 @@ def render_cycle_time_tab(completed_df):
             slow_items = len(cycle_time_df[cycle_time_df['cycle_time_days'] > 14])
             
             # Debug information
-            st.write(f"Debug: Fast={fast_items}, Normal={normal_items}, Slow={slow_items}, Total cycle_time_df={len(cycle_time_df)}")
+            st.write(f"**CHART DEBUG**: Fast={fast_items}, Normal={normal_items}, Slow={slow_items}, Total cycle_time_df={len(cycle_time_df)}")
             
             # Check if we have any data to plot
             total_performance_items = fast_items + normal_items + slow_items
@@ -1485,11 +1697,16 @@ def render_cycle_time_tab(completed_df):
                 categories = ['Fast (≤7 days)', 'Normal (8-14 days)', 'Slow (>14 days)']
                 counts = [fast_items, normal_items, slow_items]
                 
+                st.write(f"**CHART DATA**: Categories={categories}, Counts={counts}")
+                
                 # Create the chart data
                 performance_data = pd.DataFrame({
                     'Performance Category': categories,
                     'Number of Items': counts
                 })
+                
+                st.write("**Chart DataFrame:**")
+                st.dataframe(performance_data)
                 
                 # Create the chart
                 fig_performance = px.bar(
@@ -1516,266 +1733,40 @@ def render_cycle_time_tab(completed_df):
                 )
                 st.plotly_chart(fig_performance, use_container_width=True)
             else:
-                st.warning("No items with valid cycle time data to display in performance chart")
-                st.info("This could happen if:")
+                st.warning("❌ No items with valid cycle time data to display in performance chart")
+                st.info("**Possible reasons:**")
                 st.info("- Work items are missing activation dates")
                 st.info("- Work items are missing completion dates (resolved/closed)")
                 st.info("- Items were completed outside the sprint period")
+                st.info("- Date parsing failed for the available dates")
         else:
-            st.warning("No cycle time data available for performance analysis")
-            st.info("Cycle time requires both activation date and completion date")
-        
-        # Add table of work items considered for cycle time performance analysis
-        st.subheader("📋 Work Items Considered for Cycle Time Performance Analysis")
-        
-        if not cycle_time_df.empty:
-            # Create a display table with relevant columns including date fields
-            display_df = cycle_time_df[['id', 'title', 'type', 'assignee', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days', 'performance_category']].copy()
-            display_df = display_df.sort_values('cycle_time_days', ascending=False)
-            
-            # Format the table for better display
-            display_df['title'] = display_df['title'].apply(lambda x: x[:50] + "..." if len(x) > 50 else x)
-            display_df['cycle_time_days'] = display_df['cycle_time_days'].apply(lambda x: f"{x} days")
-            
-            # Format date columns to show only date part (YYYY-MM-DD)
-            display_df['activated_date'] = display_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
-            display_df['resolved_date'] = display_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
-            display_df['closed_date'] = display_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
-            
-            # Rename columns for display
-            display_df.columns = ['Work Item ID', 'Title', 'Type', 'Assignee', 'Activated Date', 'Resolved Date', 'Closed Date', 'Cycle Time', 'Performance Category']
-            
-            # Display all items without pagination - set height to show all rows
-            st.dataframe(display_df, use_container_width=True, hide_index=True, height=min(800, len(display_df) * 35 + 50))
-            
-            st.info(f"📊 **Summary**: Showing all {len(display_df)} work items with valid cycle time data used for performance analysis")
-            
-            # Add additional summary information
-            st.markdown(f"""
-            **📈 Data Breakdown:**
-            - **Total Work Items in Sprint**: {len(completed_df)} completed items
-            - **Items with Cycle Time Data**: {len(display_df)} items ({len(display_df)/len(completed_df)*100:.1f}% of completed items)
-            - **Items Missing Cycle Time**: {len(completed_df) - len(display_df)} items (missing activation or completion dates)
-            """)
-            
-            # Debug table for items missing cycle time data
-            missing_cycle_time_items = completed_df[completed_df['cycle_time_days'].isna()]
-            
-            if not missing_cycle_time_items.empty:
-                st.subheader("🔍 Debug: Items Missing Cycle Time Data")
-                st.markdown(f"**{len(missing_cycle_time_items)} items are missing cycle time data. Here's why:**")
-                
-                # DETAILED DEBUGGING: Show raw date values and parsing attempts
-                st.markdown("### 🔬 Raw Date Field Analysis:")
-                
-                debug_details = []
-                for _, item in missing_cycle_time_items.iterrows():
-                    # Get raw date values
-                    activated_raw = item.get('activated_date', '')
-                    resolved_raw = item.get('resolved_date', '')
-                    closed_raw = item.get('closed_date', '')
-                    created_raw = item.get('created_date', '')
-                    
-                    # Test date parsing
-                    activated_parsed = "❌ MISSING"
-                    resolved_parsed = "❌ MISSING"
-                    closed_parsed = "❌ MISSING"
-                    created_parsed = "❌ MISSING"
-                    
-                    # Try parsing activated_date
-                    if activated_raw:
-                        try:
-                            activated_dt = datetime.fromisoformat(activated_raw.replace('Z', '+00:00'))
-                            activated_parsed = f"✅ {activated_dt.strftime('%Y-%m-%d %H:%M')}"
-                        except Exception as e:
-                            activated_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
-                    
-                    # Try parsing resolved_date
-                    if resolved_raw:
-                        try:
-                            resolved_dt = datetime.fromisoformat(resolved_raw.replace('Z', '+00:00'))
-                            resolved_parsed = f"✅ {resolved_dt.strftime('%Y-%m-%d %H:%M')}"
-                        except Exception as e:
-                            resolved_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
-                    
-                    # Try parsing closed_date
-                    if closed_raw:
-                        try:
-                            closed_dt = datetime.fromisoformat(closed_raw.replace('Z', '+00:00'))
-                            closed_parsed = f"✅ {closed_dt.strftime('%Y-%m-%d %H:%M')}"
-                        except Exception as e:
-                            closed_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
-                    
-                    # Try parsing created_date
-                    if created_raw:
-                        try:
-                            created_dt = datetime.fromisoformat(created_raw.replace('Z', '+00:00'))
-                            created_parsed = f"✅ {created_dt.strftime('%Y-%m-%d %H:%M')}"
-                        except Exception as e:
-                            created_parsed = f"❌ PARSE ERROR: {str(e)[:30]}"
-                    
-                    # Determine why cycle time failed
-                    cycle_time_failure_reason = "Unknown"
-                    if not activated_raw:
-                        cycle_time_failure_reason = "No activated_date field"
-                    elif "PARSE ERROR" in activated_parsed:
-                        cycle_time_failure_reason = "activated_date parsing failed"
-                    elif not resolved_raw and not closed_raw:
-                        cycle_time_failure_reason = "No completion date (resolved_date or closed_date)"
-                    elif resolved_raw and "PARSE ERROR" in resolved_parsed and closed_raw and "PARSE ERROR" in closed_parsed:
-                        cycle_time_failure_reason = "Both completion dates failed to parse"
-                    elif resolved_raw and "PARSE ERROR" in resolved_parsed and not closed_raw:
-                        cycle_time_failure_reason = "resolved_date parsing failed, no closed_date"
-                    elif closed_raw and "PARSE ERROR" in closed_parsed and not resolved_raw:
-                        cycle_time_failure_reason = "closed_date parsing failed, no resolved_date"
-                    else:
-                        cycle_time_failure_reason = "Logic error - should have worked"
-                    
-                    debug_details.append({
-                        'ID': item['id'],
-                        'Title': item['title'][:30] + "..." if len(item['title']) > 30 else item['title'],
-                        'State': item['state'],
-                        'Activated Raw': str(activated_raw)[:25] + "..." if len(str(activated_raw)) > 25 else str(activated_raw),
-                        'Activated Parsed': activated_parsed,
-                        'Resolved Raw': str(resolved_raw)[:25] + "..." if len(str(resolved_raw)) > 25 else str(resolved_raw),
-                        'Resolved Parsed': resolved_parsed,
-                        'Closed Raw': str(closed_raw)[:25] + "..." if len(str(closed_raw)) > 25 else str(closed_raw),
-                        'Closed Parsed': closed_parsed,
-                        'Failure Reason': cycle_time_failure_reason
-                    })
-                    # Store full raw values for parsing (don't truncate)
-                    debug_details.append({
-                        'ID': item['id'],
-                        'Title': item['title'][:30] + "..." if len(item['title']) > 30 else item['title'],
-                        'State': item['state'],
-                        'Activated Raw': str(activated_raw) if activated_raw else 'Empty',
-                        'Activated Parsed': activated_parsed,
-                        'Resolved Raw': str(resolved_raw) if resolved_raw else 'Empty', 
-                        'Resolved Parsed': resolved_parsed,
-                        'Closed Raw': str(closed_raw) if closed_raw else 'Empty',
-                        'Closed Parsed': closed_parsed,
-                        'Failure Reason': cycle_time_failure_reason
-                    })
-                
-                # Display the detailed debug table
-                debug_details_df = pd.DataFrame(debug_details)
-                st.dataframe(debug_details_df, use_container_width=True, hide_index=True, height=min(600, len(debug_details) * 35 + 50))
-                
-                # Summary of failure reasons
-                st.markdown("### 📊 Failure Reason Summary:")
-                failure_reasons = pd.Series([item['Failure Reason'] for item in debug_details]).value_counts()
-                for reason, count in failure_reasons.items():
-                    st.markdown(f"- **{reason}**: {count} items ({count/len(debug_details)*100:.1f}%)")
-                
-                # Create debug table with detailed date information
-                debug_df = missing_cycle_time_items[['id', 'title', 'type', 'assignee', 'state', 'created_date', 'activated_date', 'resolved_date', 'closed_date']].copy()
-                
-                # Format the debug table for better analysis
-                debug_df['title'] = debug_df['title'].apply(lambda x: x[:40] + "..." if len(x) > 40 else x)
-                debug_df['created_date'] = debug_df['created_date'].apply(lambda x: x[:10] if x else 'Missing')
-                debug_df['activated_date'] = debug_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
-                debug_df['resolved_date'] = debug_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
-                debug_df['closed_date'] = debug_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
-                
-                # Add diagnosis column
-                def diagnose_missing_cycle_time(row):
-                    reasons = []
-                    if not row['activated_date'] or row['activated_date'] == 'Missing':
-                        reasons.append("No activation date")
-                    if (not row['resolved_date'] or row['resolved_date'] == 'Missing') and (not row['closed_date'] or row['closed_date'] == 'Missing'):
-                        reasons.append("No completion date")
-                    if not reasons:
-                        reasons.append("Date parsing issue")
-                    return "; ".join(reasons)
-                
-                debug_df['Issue Diagnosis'] = debug_df.apply(diagnose_missing_cycle_time, axis=1)
-                
-                # Rename columns for display
-                debug_df.columns = ['Work Item ID', 'Title', 'Type', 'Assignee', 'State', 'Created Date', 'Activated Date', 'Resolved Date', 'Closed Date', 'Issue Diagnosis']
-                
-                # Display the debug table
-                st.dataframe(debug_df, use_container_width=True, hide_index=True, height=min(600, len(debug_df) * 35 + 50))
-                
-                # Provide analysis of the missing data
-                st.markdown("### 📊 Missing Data Analysis:")
-                
-                # Count different types of issues
-                no_activation = len(missing_cycle_time_items[missing_cycle_time_items['activated_date'].isna() | (missing_cycle_time_items['activated_date'] == '')])
-                no_completion = len(missing_cycle_time_items[
-                    (missing_cycle_time_items['resolved_date'].isna() | (missing_cycle_time_items['resolved_date'] == '')) &
-                    (missing_cycle_time_items['closed_date'].isna() | (missing_cycle_time_items['closed_date'] == ''))
-                ])
-                
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    st.metric("Missing Activation Date", no_activation, delta=f"{no_activation/len(missing_cycle_time_items)*100:.1f}% of missing items")
-                
-                with col2:
-                    st.metric("Missing Completion Date", no_completion, delta=f"{no_completion/len(missing_cycle_time_items)*100:.1f}% of missing items")
-                
-                with col3:
-                    both_missing = len(missing_cycle_time_items[
-                        (missing_cycle_time_items['activated_date'].isna() | (missing_cycle_time_items['activated_date'] == '')) &
-                        ((missing_cycle_time_items['resolved_date'].isna() | (missing_cycle_time_items['resolved_date'] == '')) &
-                         (missing_cycle_time_items['closed_date'].isna() | (missing_cycle_time_items['closed_date'] == '')))
-                    ])
-                    st.metric("Missing Both Dates", both_missing, delta=f"{both_missing/len(missing_cycle_time_items)*100:.1f}% of missing items")
-                
-                # Recommendations
-                st.markdown("### 💡 Recommendations to Improve Cycle Time Tracking:")
-                
-                recommendations = []
-                
-                if no_activation > 0:
-                    recommendations.append(f"- **{no_activation} items missing activation dates**: Ensure work items are moved to 'Active' state when work begins")
-                
-                if no_completion > 0:
-                    recommendations.append(f"- **{no_completion} items missing completion dates**: Ensure work items are properly resolved/closed when work finishes")
-                
-                if both_missing > 0:
-                    recommendations.append(f"- **{both_missing} items missing both dates**: These items may have bypassed normal workflow states")
-                
-                recommendations.extend([
-                    "- **Workflow Training**: Ensure team follows consistent state transitions (New → Active → Resolved/Closed)",
-                    "- **Process Review**: Consider updating Azure DevOps workflow to automatically populate date fields",
-                    "- **Regular Monitoring**: Check for missing dates during sprint to address issues early"
-                ])
-                
-                for rec in recommendations:
-                    st.markdown(rec)
-                
-                # Show state distribution of missing items
-                st.markdown("### 🔄 State Distribution of Items Missing Cycle Time:")
-                missing_states = missing_cycle_time_items['state'].value_counts()
-                
-                states_info = []
-                for state, count in missing_states.items():
-                    percentage = (count / len(missing_cycle_time_items) * 100)
-                    states_info.append(f"- **{state}**: {count} items ({percentage:.1f}%)")
-                
-                for info in states_info:
-                    st.markdown(info)
-                
-                if 'Closed' in missing_states or 'Resolved' in missing_states:
-                    st.warning("⚠️ **Note**: Some completed items are missing cycle time data, indicating workflow issues that should be addressed.")
-        else:
-            st.warning("No work items with valid cycle time data available for analysis")
+            st.warning("❌ cycle_time_df is empty - No cycle time data available for performance analysis")
+            st.info("**This means**: No completed items have both activation date and completion date")
             
             # Show all completed items for reference
             if not completed_df.empty:
-                st.markdown("**All completed items (for reference):**")
-                reference_df = completed_df[['id', 'title', 'type', 'assignee', 'state', 'activated_date', 'resolved_date', 'closed_date']].copy()
+                st.markdown("**All completed items (for debugging):**")
+                reference_df = completed_df[['id', 'title', 'type', 'assignee', 'state', 'activated_date', 'resolved_date', 'closed_date', 'cycle_time_days']].copy()
                 reference_df['title'] = reference_df['title'].apply(lambda x: x[:50] + "..." if len(x) > 50 else x)
-                reference_df['activated_date'] = reference_df['activated_date'].apply(lambda x: x[:10] if x else 'Missing')
-                reference_df['resolved_date'] = reference_df['resolved_date'].apply(lambda x: x[:10] if x else 'Missing')
-                reference_df['closed_date'] = reference_df['closed_date'].apply(lambda x: x[:10] if x else 'Missing')
+                reference_df['activated_date'] = reference_df['activated_date'].apply(format_date_for_display)
+                reference_df['resolved_date'] = reference_df['resolved_date'].apply(format_date_for_display)
+                reference_df['closed_date'] = reference_df['closed_date'].apply(format_date_for_display)
                 
                 # Rename columns for display
-                reference_df.columns = ['ID', 'Title', 'Type', 'Assignee', 'State', 'Activated Date', 'Resolved Date', 'Closed Date']
+                reference_df.columns = ['ID', 'Title', 'Type', 'Assignee', 'State', 'Activated Date', 'Resolved Date', 'Closed Date', 'Cycle Time']
                 
                 st.dataframe(reference_df, use_container_width=True, hide_index=True)
-                st.info("💡 Items need both activation date and completion date (resolved/closed) to calculate cycle time")
+                st.info("💡 **Key Point**: Items need both activation date and completion date (resolved/closed) to calculate cycle time")
+                
+                # Additional debugging: Check date field availability
+                activated_count = completed_df['activated_date'].notna().sum()
+                resolved_count = completed_df['resolved_date'].notna().sum()
+                closed_count = completed_df['closed_date'].notna().sum()
+                
+                st.write(f"**Date field availability:**")
+                st.write(f"- Items with activated_date: {activated_count}/{len(completed_df)}")
+                st.write(f"- Items with resolved_date: {resolved_count}/{len(completed_df)}")
+                st.write(f"- Items with closed_date: {closed_count}/{len(completed_df)}")
     
     with col2:
         # Performance metrics
@@ -1918,8 +1909,8 @@ def render_cycle_time_tab(completed_df):
                     
                     with col3:
                         if item['activated_date'] and (item['resolved_date'] or item['closed_date']):
-                            activated = item['activated_date'][:10]
-                            completed = (item['resolved_date'] or item['closed_date'])[:10]
+                            activated = format_date_for_display(item['activated_date'])
+                            completed = format_date_for_display(item['resolved_date'] or item['closed_date'])
                             st.markdown(f"""
                             **Date Timeline:**
                             - **Activated**: {activated}
@@ -1932,9 +1923,184 @@ def render_cycle_time_tab(completed_df):
             st.success("✅ **All Items Completed Within Expected Time**")
             st.info("No items exceeded the expected cycle time threshold - great team performance!")
 
+def get_category_insight(category, items, story_points, item_pct, points_pct):
+    """Generate insight text for a category based on its metrics"""
+    avg_points_per_item = story_points / items if items > 0 else 0
+    
+    insights = []
+    
+    # Complexity insight
+    if avg_points_per_item > 3:
+        insights.append("High complexity work")
+    elif avg_points_per_item > 1:
+        insights.append("Medium complexity")
+    else:
+        insights.append("Low complexity tasks")
+    
+    # Volume insight
+    if item_pct > 40:
+        insights.append("Sprint focus area")
+    elif item_pct > 20:
+        insights.append("Significant portion")
+    else:
+        insights.append("Supporting work")
+    
+    # Category-specific insights
+    if category.lower() == 'backend':
+        if story_points > 15:
+            insights.append("Major infrastructure work")
+        else:
+            insights.append("API/service updates")
+    elif category.lower() == 'frontend':
+        if story_points > 15:
+            insights.append("Major UI overhaul")
+        else:
+            insights.append("UI improvements")
+    elif category.lower() == 'bug':
+        if items <= 2:
+            insights.append("Good code quality")
+        else:
+            insights.append("Quality review needed")
+    elif category.lower() == 'ux':
+        insights.append("User experience focus")
+    
+    return " • ".join(insights)
+
 def render_categories_tab(completed_df):
     """Render the work categories tab"""
     st.header("Work Categories Analysis")
+    
+    # Add comprehensive completed_df table at the top
+    st.subheader("📋 All Completed Work Items - Detailed View")
+    
+    if not completed_df.empty:
+        # Create a comprehensive display version of completed_df
+        display_completed_df = completed_df.copy()
+        
+        # Format dates for better display
+        date_columns = ['created_date', 'activated_date', 'resolved_date', 'closed_date']
+        for col in date_columns:
+            if col in display_completed_df.columns:
+                display_completed_df[col] = display_completed_df[col].apply(format_date_for_display)
+        
+        # Format cycle time
+        if 'cycle_time_days' in display_completed_df.columns:
+            display_completed_df['cycle_time_days'] = display_completed_df['cycle_time_days'].apply(
+                lambda x: f"{x:.1f} days" if pd.notna(x) else "N/A"
+            )
+        
+        # Truncate long titles for better display
+        if 'title' in display_completed_df.columns:
+            display_completed_df['title'] = display_completed_df['title'].apply(
+                lambda x: x[:50] + "..." if len(x) > 50 else x
+            )
+        
+        # Format tags
+        if 'tags' in display_completed_df.columns:
+            display_completed_df['tags'] = display_completed_df['tags'].apply(
+                lambda x: x[:30] + "..." if x and len(x) > 30 else (x if x else "None")
+            )
+        
+        # Format completion status
+        if 'is_completed' in display_completed_df.columns:
+            display_completed_df['is_completed'] = display_completed_df['is_completed'].apply(
+                lambda x: "✅ Yes" if x else "⏳ No"
+            )
+        
+        # Select and reorder columns for optimal display
+        display_columns = [
+            'id', 'title', 'type', 'state', 'assignee', 'story_points', 
+            'category', 'cycle_time_days', 'created_date', 'activated_date', 
+            'resolved_date', 'closed_date', 'tags'
+        ]
+        
+        # Only include columns that exist in the dataframe
+        available_columns = [col for col in display_columns if col in display_completed_df.columns]
+        display_table = display_completed_df[available_columns].copy()
+        
+        # Rename columns for better readability
+        column_renames = {
+            'id': 'ID',
+            'title': 'Title',
+            'type': 'Type',
+            'state': 'State',
+            'assignee': 'Assignee',
+            'story_points': 'Story Points',
+            'category': 'Category',
+            'cycle_time_days': 'Cycle Time',
+            'created_date': 'Created Date',
+            'activated_date': 'Activated Date',
+            'resolved_date': 'Resolved Date',
+            'closed_date': 'Closed Date',
+            'tags': 'Tags'
+        }
+        
+        # Apply renames only for columns that exist
+        display_table = display_table.rename(columns={k: v for k, v in column_renames.items() if k in display_table.columns})
+        
+        # Display summary metrics above the table
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Completed Items", len(completed_df))
+        
+        with col2:
+            total_points = completed_df['story_points'].sum()
+            st.metric("Total Story Points", int(total_points))
+        
+        with col3:
+            avg_cycle_time = completed_df[completed_df['cycle_time_days'].notna()]['cycle_time_days'].mean()
+            cycle_time_text = f"{avg_cycle_time:.1f} days" if pd.notna(avg_cycle_time) else "N/A"
+            st.metric("Avg Cycle Time", cycle_time_text)
+        
+        with col4:
+            unique_assignees = len(completed_df['assignee'].unique()) - (1 if 'Unassigned' in completed_df['assignee'].unique() else 0)
+            st.metric("Active Contributors", unique_assignees)
+        
+        # Display the comprehensive table
+        st.dataframe(
+            display_table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ID": st.column_config.NumberColumn("ID", width="small"),
+                "Title": st.column_config.TextColumn("Title", width="large"),
+                "Type": st.column_config.TextColumn("Type", width="small"),
+                "State": st.column_config.TextColumn("State", width="small"),
+                "Assignee": st.column_config.TextColumn("Assignee", width="medium"),
+                "Story Points": st.column_config.NumberColumn("Story Points", width="small"),
+                "Category": st.column_config.TextColumn("Category", width="small"),
+                "Cycle Time": st.column_config.TextColumn("Cycle Time", width="small"),
+                "Created Date": st.column_config.TextColumn("Created Date", width="small"),
+                "Activated Date": st.column_config.TextColumn("Activated Date", width="small"),
+                "Resolved Date": st.column_config.TextColumn("Resolved Date", width="small"),
+                "Closed Date": st.column_config.TextColumn("Closed Date", width="small"),
+                "Tags": st.column_config.TextColumn("Tags", width="medium")
+            }
+        )
+        
+        # Add export functionality for completed items
+        if st.button("📥 Export Completed Items to CSV"):
+            # Use original data with proper formatting for export
+            export_df = completed_df.copy()
+            
+            # Format dates for export
+            for col in date_columns:
+                if col in export_df.columns:
+                    export_df[col] = export_df[col].apply(format_date_for_display)
+            
+            csv = export_df.to_csv(index=False)
+            st.download_button(
+                label="Download Completed Items CSV",
+                data=csv,
+                file_name=f"completed_work_items_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        st.markdown("---")  # Add separator before category analysis
+    else:
+        st.warning("No completed work items available for analysis.")
+        return
     
     # Category summary
     category_summary = completed_df.groupby('category').agg({
@@ -1949,44 +2115,323 @@ def render_categories_tab(completed_df):
     category_summary['Item %'] = (category_summary['Items'] / total_items * 100).round(1)
     category_summary['Points %'] = (category_summary['Story Points'] / total_points * 100).round(1)
     
-    # Display summary table
-    st.subheader("Category Summary")
-    st.dataframe(category_summary, use_container_width=True)
+    # Display comprehensive category summary table
+    st.subheader("📊 Category Summary - Chart Data Analysis")
     
-    # Category breakdown charts
+    if not category_summary.empty:
+        # Add summary metrics above the table
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Categories", len(category_summary))
+        
+        with col2:
+            st.metric("Total Items", int(total_items))
+        
+        with col3:
+            st.metric("Total Story Points", int(total_points))
+        
+        with col4:
+            dominant_category = category_summary.loc[category_summary['Story Points'].idxmax()]
+            st.metric("Dominant Category", dominant_category['Category'], 
+                     delta=f"{dominant_category['Points %']:.1f}% of points")
+        
+        # Create enhanced display version of category_summary
+        display_category_summary = category_summary.copy()
+        
+        # Sort by story points descending for better visualization
+        display_category_summary = display_category_summary.sort_values('Story Points', ascending=False)
+        
+        # Add ranking column
+        display_category_summary['Rank'] = range(1, len(display_category_summary) + 1)
+        
+        # Add visual indicators for percentages
+        display_category_summary['Item % Visual'] = display_category_summary['Item %'].apply(
+            lambda x: f"{x:.1f}% {'🟢' if x >= 30 else '🟡' if x >= 15 else '🔴'}"
+        )
+        
+        display_category_summary['Points % Visual'] = display_category_summary['Points %'].apply(
+            lambda x: f"{x:.1f}% {'🟢' if x >= 30 else '🟡' if x >= 15 else '🔴'}"
+        )
+        
+        # Add category insights
+        display_category_summary['Category Insight'] = display_category_summary.apply(
+            lambda row: get_category_insight(row['Category'], row['Items'], row['Story Points'], row['Item %'], row['Points %']),
+            axis=1
+        )
+        
+        # Reorder columns for optimal display
+        display_columns = [
+            'Rank', 'Category', 'Items', 'Item % Visual', 
+            'Story Points', 'Points % Visual', 'Category Insight'
+        ]
+        
+        display_table = display_category_summary[display_columns].copy()
+        
+        # Rename columns for better readability
+        display_table.columns = [
+            'Rank', 'Category', 'Items Count', 'Item Distribution', 
+            'Story Points', 'Points Distribution', 'Insight'
+        ]
+        
+        st.write("**Category Summary Data (Used for Chart Generation):**")
+        st.dataframe(
+            display_table,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                "Category": st.column_config.TextColumn("Category", width="medium"),
+                "Items Count": st.column_config.NumberColumn("Items Count", width="small"),
+                "Item Distribution": st.column_config.TextColumn("Item Distribution", width="medium"),
+                "Story Points": st.column_config.NumberColumn("Story Points", width="small"),
+                "Points Distribution": st.column_config.TextColumn("Points Distribution", width="medium"),
+                "Insight": st.column_config.TextColumn("Insight", width="large")
+            }
+        )
+        
+        # Add detailed breakdown section
+        st.write("**Detailed Category Breakdown:**")
+        
+        # Create detailed analysis for each category
+        for _, row in display_category_summary.iterrows():
+            with st.expander(f"📋 {row['Category']} - Detailed Analysis", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown(f"""
+                    **Basic Metrics:**
+                    - **Rank**: #{row['Rank']} by story points
+                    - **Items**: {row['Items']} work items
+                    - **Story Points**: {row['Story Points']} points
+                    """)
+                
+                with col2:
+                    st.markdown(f"""
+                    **Distribution:**
+                    - **Item Share**: {row['Item %']:.1f}% of total items
+                    - **Points Share**: {row['Points %']:.1f}% of total points
+                    - **Avg Points/Item**: {(row['Story Points']/row['Items']):.1f}
+                    """)
+                
+                with col3:
+                    # Get items in this category for additional insights
+                    category_items = completed_df[completed_df['category'] == row['Category']]
+                    avg_cycle_time = category_items[category_items['cycle_time_days'].notna()]['cycle_time_days'].mean()
+                    unique_assignees = len(category_items['assignee'].unique())
+                    
+                    st.markdown(f"""
+                    **Performance:**
+                    - **Avg Cycle Time**: {avg_cycle_time:.1f} days if pd.notna(avg_cycle_time) else 'N/A'
+                    - **Contributors**: {unique_assignees} team members
+                    - **Complexity**: {'High' if (row['Story Points']/row['Items']) > 3 else 'Medium' if (row['Story Points']/row['Items']) > 1 else 'Low'}
+                    """)
+                
+                # Show sample items from this category
+                sample_items = category_items.head(3)
+                if not sample_items.empty:
+                    st.markdown("**Sample Items:**")
+                    for _, item in sample_items.iterrows():
+                        st.markdown(f"- **#{item['id']}**: {item['title'][:60]}{'...' if len(item['title']) > 60 else ''} ({item['story_points']} pts)")
+        
+        # Add export functionality for category summary
+        if st.button("📥 Export Category Summary to CSV"):
+            # Use original category_summary data for export
+            csv = category_summary.to_csv(index=False)
+            st.download_button(
+                label="Download Category Summary CSV",
+                data=csv,
+                file_name=f"category_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        st.markdown("---")  # Add separator before charts
+    else:
+        st.warning("No category data available for analysis.")
+        return
+    
+    # Category breakdown charts - using the actual category_summary data
     col1, col2 = st.columns(2)
     
     with col1:
-        fig_items = px.pie(
-            category_summary, 
-            values='Items', 
-            names='Category',
-            title="Work Items by Category",
-            color_discrete_sequence=PASTEL_COLORS['categories']
-        )
-        fig_items.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(size=12),
-            title_font_size=16
-        )
-        st.plotly_chart(fig_items, use_container_width=True)
+        # COMPREHENSIVE DEBUG: Show the data being used for the chart
+        st.write("**🔍 COMPREHENSIVE DEBUG: Work Items Chart Data Analysis**")
+        st.write(f"**category_summary DataFrame info:**")
+        st.write(f"- Shape: {category_summary.shape}")
+        st.write(f"- Columns: {list(category_summary.columns)}")
+        st.write(f"- Data types: {category_summary.dtypes.to_dict()}")
+        
+        st.write("**Complete category_summary DataFrame:**")
+        st.dataframe(category_summary)
+        
+        # Check for data issues
+        if category_summary.empty:
+            st.error("❌ category_summary is EMPTY!")
+        elif 'Category' not in category_summary.columns:
+            st.error("❌ 'Category' column missing from category_summary!")
+        elif 'Items' not in category_summary.columns:
+            st.error("❌ 'Items' column missing from category_summary!")
+        else:
+            # Show the exact data that will be used for the chart
+            chart_data_items = category_summary[['Category', 'Items']].copy()
+            st.write("**Exact chart data for pie chart:**")
+            st.dataframe(chart_data_items)
+            
+            # Show individual values
+            st.write("**Individual values for pie chart:**")
+            for _, row in chart_data_items.iterrows():
+                st.write(f"- {row['Category']}: {row['Items']} items")
+            
+            # Check for zero or negative values
+            zero_items = chart_data_items[chart_data_items['Items'] <= 0]
+            if not zero_items.empty:
+                st.warning(f"⚠️ Found {len(zero_items)} categories with zero or negative items!")
+                st.dataframe(zero_items)
+            
+            # Try alternative chart creation method
+            st.write("**Creating chart with explicit data...**")
+            
+            try:
+                # Method 1: Direct data approach
+                categories = chart_data_items['Category'].tolist()
+                values = chart_data_items['Items'].tolist()
+                
+                st.write(f"**Chart input data:**")
+                st.write(f"- Categories: {categories}")
+                st.write(f"- Values: {values}")
+                
+                # Create chart using go.Pie instead of px.pie
+                fig_items = go.Figure(data=[go.Pie(
+                    labels=categories,
+                    values=values,
+                    name="Work Items"
+                )])
+                
+                fig_items.update_layout(
+                    title="Work Items by Category",
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=12),
+                    title_font_size=16,
+                    showlegend=True
+                )
+                
+                fig_items.update_traces(
+                    textposition='inside', 
+                    textinfo='percent+label',
+                    hovertemplate='<b>%{label}</b><br>Items: %{value}<br>Percentage: %{percent}<extra></extra>'
+                )
+                
+                st.plotly_chart(fig_items, use_container_width=True)
+                st.success("✅ Chart created successfully using go.Pie!")
+                
+            except Exception as e:
+                st.error(f"❌ Error creating chart: {str(e)}")
+                
+                # Fallback: Try px.pie with explicit parameters
+                try:
+                    st.write("**Trying fallback method with px.pie...**")
+                    fig_items_fallback = px.pie(
+                        values=values,
+                        names=categories,
+                        title="Work Items by Category (Fallback)",
+                        color_discrete_sequence=PASTEL_COLORS['categories']
+                    )
+                    fig_items_fallback.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(size=12),
+                        title_font_size=16,
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig_items_fallback, use_container_width=True)
+                    st.success("✅ Fallback chart created successfully!")
+                except Exception as e2:
+                    st.error(f"❌ Fallback method also failed: {str(e2)}")
     
     with col2:
-        fig_points = px.pie(
-            category_summary, 
-            values='Story Points', 
-            names='Category',
-            title="Story Points by Category",
-            color_discrete_sequence=PASTEL_COLORS['categories']
-        )
-        fig_points.update_layout(
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            font=dict(size=12),
-            title_font_size=16
-        )
-        st.plotly_chart(fig_points, use_container_width=True)
+        # COMPREHENSIVE DEBUG: Show the data being used for the chart
+        st.write("**🔍 COMPREHENSIVE DEBUG: Story Points Chart Data Analysis**")
+        st.write("**Complete category_summary DataFrame for Story Points:**")
+        st.dataframe(category_summary[['Category', 'Story Points']])
+        
+        # Check for data issues
+        if 'Story Points' not in category_summary.columns:
+            st.error("❌ 'Story Points' column missing from category_summary!")
+        else:
+            # Show the exact data that will be used for the chart
+            chart_data_points = category_summary[['Category', 'Story Points']].copy()
+            st.write("**Exact chart data for story points pie chart:**")
+            st.dataframe(chart_data_points)
+            
+            # Show individual values
+            st.write("**Individual values for story points pie chart:**")
+            for _, row in chart_data_points.iterrows():
+                st.write(f"- {row['Category']}: {row['Story Points']} points")
+            
+            # Check for zero or negative values
+            zero_points = chart_data_points[chart_data_points['Story Points'] <= 0]
+            if not zero_points.empty:
+                st.warning(f"⚠️ Found {len(zero_points)} categories with zero or negative story points!")
+                st.dataframe(zero_points)
+            
+            try:
+                # Method 1: Direct data approach for story points
+                categories = chart_data_points['Category'].tolist()
+                values = chart_data_points['Story Points'].tolist()
+                
+                st.write(f"**Story Points Chart input data:**")
+                st.write(f"- Categories: {categories}")
+                st.write(f"- Values: {values}")
+                
+                # Create chart using go.Pie instead of px.pie
+                fig_points = go.Figure(data=[go.Pie(
+                    labels=categories,
+                    values=values,
+                    name="Story Points"
+                )])
+                
+                fig_points.update_layout(
+                    title="Story Points by Category",
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(size=12),
+                    title_font_size=16,
+                    showlegend=True
+                )
+                
+                fig_points.update_traces(
+                    textposition='inside', 
+                    textinfo='percent+label',
+                    hovertemplate='<b>%{label}</b><br>Story Points: %{value}<br>Percentage: %{percent}<extra></extra>'
+                )
+                
+                st.plotly_chart(fig_points, use_container_width=True)
+                st.success("✅ Story Points chart created successfully using go.Pie!")
+                
+            except Exception as e:
+                st.error(f"❌ Error creating story points chart: {str(e)}")
+                
+                # Fallback: Try px.pie with explicit parameters
+                try:
+                    st.write("**Trying fallback method for story points with px.pie...**")
+                    fig_points_fallback = px.pie(
+                        values=values,
+                        names=categories,
+                        title="Story Points by Category (Fallback)",
+                        color_discrete_sequence=PASTEL_COLORS['categories']
+                    )
+                    fig_points_fallback.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)',
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(size=12),
+                        title_font_size=16,
+                        showlegend=True
+                    )
+                    st.plotly_chart(fig_points_fallback, use_container_width=True)
+                    st.success("✅ Story Points fallback chart created successfully!")
+                except Exception as e2:
+                    st.error(f"❌ Story Points fallback method also failed: {str(e2)}")
     
     # Detailed category view
     st.subheader("Category Details")
@@ -2189,84 +2634,6 @@ def render_burndown_tab(df, completed_df):
     **Completed States**: {len(df[df['state'].isin(COMPLETED_STATES)])} items (Closed: {completed_states_in_data.get('Closed', 0)}, Resolved: {completed_states_in_data.get('Resolved', 0)})
     """)
     
-    # DEBUG: Show detailed data analysis
-    st.subheader("🔍 Debug Information - Burndown Data Analysis")
-    
-    with st.expander("📊 Click to view detailed burndown data analysis"):
-        st.markdown("### All Work Item States in Data:")
-        all_states = df['state'].value_counts()
-        st.write(all_states.to_dict())
-        
-        st.markdown("### Work Items with Completion Dates:")
-        items_with_resolved = df[df['resolved_date'].notna()]
-        items_with_closed = df[df['closed_date'].notna()]
-        st.write(f"Items with resolved_date: {len(items_with_resolved)}")
-        st.write(f"Items with closed_date: {len(items_with_closed)}")
-        
-        if len(items_with_resolved) > 0:
-            st.markdown("**Sample resolved dates:**")
-            st.write(items_with_resolved[['id', 'title', 'state', 'resolved_date']].head().to_dict('records'))
-        
-        if len(items_with_closed) > 0:
-            st.markdown("**Sample closed dates:**")
-            st.write(items_with_closed[['id', 'title', 'state', 'closed_date']].head().to_dict('records'))
-        
-        st.markdown("### Scope Calculation:")
-        scope_items = df[df['state'].isin(REMAINING_STATES + COMPLETED_STATES)]
-        st.write(f"Total items in scope (Remaining + Completed states): {len(scope_items)}")
-        st.write(f"Total story points in scope: {scope_items['story_points'].sum()}")
-        
-        st.markdown("### Items by State (In Scope Only):")
-        scope_states = scope_items['state'].value_counts()
-        st.write(scope_states.to_dict())
-        
-        st.markdown("### Date Range Analysis:")
-        st.write(f"Sprint start: {sprint_start_date}")
-        st.write(f"Sprint end: {sprint_end_date}")
-        
-        # Show completion dates within sprint range
-        completed_items = df[df['state'].isin(COMPLETED_STATES)]
-        dates_in_range = []
-        dates_outside_range = []
-        
-        for _, item in completed_items.iterrows():
-            completion_date = None
-            if item['resolved_date']:
-                try:
-                    completion_date = datetime.fromisoformat(item['resolved_date'].replace('Z', '+00:00')).date()
-                except:
-                    pass
-            elif item['closed_date']:
-                try:
-                    completion_date = datetime.fromisoformat(item['closed_date'].replace('Z', '+00:00')).date()
-                except:
-                    pass
-            
-            if completion_date:
-                if sprint_start_date <= completion_date <= sprint_end_date:
-                    dates_in_range.append({
-                        'id': item['id'],
-                        'title': item['title'][:50],
-                        'completion_date': completion_date,
-                        'story_points': item['story_points']
-                    })
-                else:
-                    dates_outside_range.append({
-                        'id': item['id'],
-                        'title': item['title'][:50],
-                        'completion_date': completion_date,
-                        'story_points': item['story_points']
-                    })
-        
-        st.markdown(f"**Completed items within sprint range ({sprint_start_date} to {sprint_end_date}):**")
-        st.write(f"Count: {len(dates_in_range)}")
-        if dates_in_range:
-            st.write(dates_in_range[:10])  # Show first 10
-        
-        st.markdown("**Completed items outside sprint range:**")
-        st.write(f"Count: {len(dates_outside_range)}")
-        if dates_outside_range:
-            st.write(dates_outside_range[:5])  # Show first 5
     
     
     # Use sprint dates for analysis
@@ -2293,22 +2660,103 @@ def render_burndown_tab(df, completed_df):
         completed_by_date_items = 0
         completed_by_date_points = 0
         
+        # DEBUG TABLE: Show all data being processed in the scope_items loop
+        if current_date == start_date:  # Only show on first iteration to avoid repetition
+            st.markdown("### 🔍 DEBUG: scope_items Loop Data (Line 2145)")
+            st.write(f"**Processing {len(scope_items)} items in scope_items.iterrows() loop**")
+            st.write(f"**Current date being processed**: {current_date}")
+            st.write(f"**Sprint date range**: {start_date} to {end_date}")
+            
+            # Create comprehensive debug table for the loop
+            loop_debug_data = []
+            for idx, (_, item) in enumerate(scope_items.iterrows()):
+                # Extract all the data that will be processed in the loop
+                resolved_date_raw = item.get('resolved_date', None)
+                closed_date_raw = item.get('closed_date', None)
+                
+                # Parse dates using the same logic as in the loop
+                resolved_date_parsed = None
+                closed_date_parsed = None
+                completion_date = None
+                
+                if resolved_date_raw:
+                    resolved_date_parsed = parse_azure_date_to_datetime(resolved_date_raw)
+                    completion_date = resolved_date_parsed.date() if resolved_date_parsed else None
+                elif closed_date_raw:
+                    closed_date_parsed = parse_azure_date_to_datetime(closed_date_raw)
+                    completion_date = closed_date_parsed.date() if closed_date_parsed else None
+                
+                # Determine if item will be counted as completed
+                will_be_counted = False
+                completion_logic = "Not completed"
+                
+                if item['state'] in COMPLETED_STATES:
+                    if completion_date and sprint_start_date <= completion_date <= current_date:
+                        will_be_counted = True
+                        completion_logic = f"Completed on {completion_date} (within sprint)"
+                    elif not completion_date:
+                        # Check sprint progress logic
+                        sprint_progress = (current_date - start_date).days / (end_date - start_date).days
+                        if sprint_progress >= 0.5:
+                            will_be_counted = True
+                            completion_logic = f"Completed (no date, sprint progress {sprint_progress:.1f})"
+                        else:
+                            completion_logic = f"Completed (no date, sprint progress {sprint_progress:.1f} < 0.5)"
+                    else:
+                        completion_logic = f"Completed but date {completion_date} outside range"
+                
+                loop_debug_data.append({
+                    'Index': idx,
+                    'ID': item['id'],
+                    'Title': item['title'][:40] + "..." if len(item['title']) > 40 else item['title'],
+                    'State': item['state'],
+                    'Story Points': item['story_points'],
+                    'Is Completed': item['is_completed'],
+                    'Resolved Date Raw': str(resolved_date_raw)[:19] if resolved_date_raw else "None",
+                    'Closed Date Raw': str(closed_date_raw)[:19] if closed_date_raw else "None",
+                    'Resolved Date Parsed': resolved_date_parsed.strftime('%Y-%m-%d') if resolved_date_parsed and pd.notna(resolved_date_parsed) else "None",
+                    'Closed Date Parsed': closed_date_parsed.strftime('%Y-%m-%d') if closed_date_parsed and pd.notna(closed_date_parsed) else "None",
+                    'Completion Date': str(completion_date) if completion_date else "None",
+                    'Will Be Counted': "✅ Yes" if will_be_counted else "❌ No",
+                    'Logic': completion_logic
+                })
+            
+            # Display the comprehensive debug table
+            loop_debug_df = pd.DataFrame(loop_debug_data)
+            st.dataframe(loop_debug_df, use_container_width=True, hide_index=True)
+            
+            # Show summary of what will be processed
+            items_to_be_counted = sum(1 for item in loop_debug_data if item['Will Be Counted'] == "✅ Yes")
+            points_to_be_counted = sum(item['Story Points'] for item in loop_debug_data if item['Will Be Counted'] == "✅ Yes")
+            
+            st.write(f"**Loop Processing Summary for {current_date}:**")
+            st.write(f"- Items that will be counted as completed: {items_to_be_counted}")
+            st.write(f"- Story points that will be counted: {points_to_be_counted}")
+            st.write(f"- Items in COMPLETED_STATES: {len([item for item in loop_debug_data if item['State'] in COMPLETED_STATES])}")
+            st.write(f"- Items with completion dates: {len([item for item in loop_debug_data if item['Completion Date'] != 'None'])}")
+            
+            st.markdown("---")
+        
         for _, item in scope_items.iterrows():
             # Check if item has transitioned to completed state
             if item['state'] in COMPLETED_STATES:
                 completion_date = None
                 
-                # Get the actual completion date from resolved_date or closed_date
-                if item['resolved_date']:
-                    try:
-                        completion_date = datetime.fromisoformat(item['resolved_date'].replace('Z', '+00:00')).date()
-                    except:
-                        pass
-                elif item['closed_date']:
-                    try:
-                        completion_date = datetime.fromisoformat(item['closed_date'].replace('Z', '+00:00')).date()
-                    except:
-                        pass
+                # Get the actual completion date from resolved_date or closed_date using enhanced parsing logic
+                if pd.notna(item['resolved_date']):
+                    # Handle both datetime objects and strings for resolved_date
+                    if isinstance(item['resolved_date'], datetime):
+                        parsed_date = item['resolved_date']
+                    else:
+                        parsed_date = parse_azure_date_to_datetime(item['resolved_date'])
+                    completion_date = parsed_date.date() if parsed_date else None
+                elif pd.notna(item['closed_date']):
+                    # Handle both datetime objects and strings for closed_date
+                    if isinstance(item['closed_date'], datetime):
+                        parsed_date = item['closed_date']
+                    else:
+                        parsed_date = parse_azure_date_to_datetime(item['closed_date'])
+                    completion_date = parsed_date.date() if parsed_date else None
                 
                 # If we have a completion date within sprint, use it
                 if completion_date and sprint_start_date <= completion_date <= current_date:
@@ -2331,6 +2779,10 @@ def render_burndown_tab(df, completed_df):
         remaining_items = max(0, remaining_items)
         remaining_points = max(0, remaining_points)
         
+        # DEBUG: Show calculation for first few days
+        if current_date <= start_date + timedelta(days=3):
+            st.write(f"**DEBUG {current_date}**: total_items={total_items}, completed_by_date_items={completed_by_date_items}, remaining_items={remaining_items}")
+        
         burndown_data.append({
             'date': current_date,
             'remaining_items': remaining_items,
@@ -2343,7 +2795,226 @@ def render_burndown_tab(df, completed_df):
         
         current_date += timedelta(days=1)
     
+    # DEBUG TABLE: Show scope_items data AFTER processing the complete for loop
+    st.markdown("### 🔍 DEBUG: scope_items Data AFTER Complete Loop Processing")
+    st.write(f"**Loop processing completed for all dates from {start_date} to {end_date}**")
+    st.write(f"**Total burndown data points generated**: {len(burndown_data)}")
+    
+    # Create comprehensive debug table showing final state of scope_items after all processing
+    final_scope_debug_data = []
+    for idx, (_, item) in enumerate(scope_items.iterrows()):
+        # Extract all the data that was processed throughout the loop
+        resolved_date_raw = item.get('resolved_date', None)
+        closed_date_raw = item.get('closed_date', None)
+        
+        # Parse dates using the same logic as in the loop
+        resolved_date_parsed = None
+        closed_date_parsed = None
+        completion_date = None
+        
+        # Handle both datetime objects and strings for date parsing
+        if resolved_date_raw:
+            st.write(f"**DEBUG - Processing resolved_date_raw**: '{resolved_date_raw}' (type: {type(resolved_date_raw)})")
+            try:
+                # Check if it's already a datetime object
+                if isinstance(resolved_date_raw, datetime):
+                    resolved_date_parsed = resolved_date_raw
+                    st.write(f"**DEBUG - Already datetime object, using directly**: {resolved_date_parsed}")
+                elif pd.notna(resolved_date_raw):
+                    # Try to parse as string
+                    resolved_date_parsed = parse_azure_date_to_datetime(resolved_date_raw)
+                    st.write(f"**DEBUG - Parsed from string**: {resolved_date_parsed}")
+                else:
+                    resolved_date_parsed = None
+                    st.write(f"**DEBUG - resolved_date_raw is NaN/None**")
+                
+                completion_date = resolved_date_parsed.date() if resolved_date_parsed else None
+                st.write(f"**DEBUG - Final completion_date from resolved**: {completion_date}")
+            except Exception as e:
+                st.error(f"**DEBUG - Error processing resolved_date**: {e}")
+                resolved_date_parsed = None
+                completion_date = None
+        elif closed_date_raw:
+            st.write(f"**DEBUG - Processing closed_date_raw**: '{closed_date_raw}' (type: {type(closed_date_raw)})")
+            try:
+                # Check if it's already a datetime object
+                if isinstance(closed_date_raw, datetime):
+                    closed_date_parsed = closed_date_raw
+                    st.write(f"**DEBUG - Already datetime object, using directly**: {closed_date_parsed}")
+                elif pd.notna(closed_date_raw):
+                    # Try to parse as string
+                    closed_date_parsed = parse_azure_date_to_datetime(closed_date_raw)
+                    st.write(f"**DEBUG - Parsed from string**: {closed_date_parsed}")
+                else:
+                    closed_date_parsed = None
+                    st.write(f"**DEBUG - closed_date_raw is NaN/None**")
+                
+                completion_date = closed_date_parsed.date() if closed_date_parsed else None
+                st.write(f"**DEBUG - Final completion_date from closed**: {completion_date}")
+            except Exception as e:
+                st.error(f"**DEBUG - Error processing closed_date**: {e}")
+                closed_date_parsed = None
+                completion_date = None
+        
+        # Determine final completion status based on loop logic
+        was_counted_as_completed = False
+        final_completion_logic = "Not completed"
+        
+        if item['state'] in COMPLETED_STATES:
+            if completion_date and sprint_start_date <= completion_date <= end_date:
+                was_counted_as_completed = True
+                final_completion_logic = f"Completed on {completion_date} (within sprint period)"
+            elif not completion_date:
+                # This item would have been counted after sprint midpoint
+                was_counted_as_completed = True
+                final_completion_logic = f"Completed (no date, counted after sprint midpoint)"
+            else:
+                final_completion_logic = f"Completed but date {completion_date} outside sprint range"
+        
+        # Calculate which day this item would have been counted (if applicable)
+        counted_on_day = "N/A"
+        if was_counted_as_completed:
+            if completion_date and sprint_start_date <= completion_date <= end_date:
+                counted_on_day = str(completion_date)
+            else:
+                # Would be counted after midpoint
+                midpoint_date = start_date + timedelta(days=(end_date - start_date).days // 2)
+                counted_on_day = f"After {midpoint_date} (no completion date)"
+        
+        final_scope_debug_data.append({
+            'Index': idx,
+            'ID': item['id'],
+            'Title': item['title'][:50] + "..." if len(item['title']) > 50 else item['title'],
+            'Type': item['type'],
+            'State': item['state'],
+            'Assignee': item['assignee'],
+            'Story Points': item['story_points'],
+            'Category': item['category'],
+            'Is Completed': item['is_completed'],
+            'Resolved Date Raw': str(resolved_date_raw)[:19] if resolved_date_raw else "None",
+            'Closed Date Raw': str(closed_date_raw)[:19] if closed_date_raw else "None",
+            'Resolved Date Parsed': resolved_date_parsed.strftime('%Y-%m-%d') if resolved_date_parsed and pd.notna(resolved_date_parsed) else "None",
+            'Closed Date Parsed': closed_date_parsed.strftime('%Y-%m-%d') if closed_date_parsed and pd.notna(closed_date_parsed) else "None",
+            'Final Completion Date': str(completion_date) if completion_date else "None",
+            'Was Counted in Burndown': "✅ Yes" if was_counted_as_completed else "❌ No",
+            'Counted On Day': counted_on_day,
+            'Final Logic': final_completion_logic,
+            'Created Date': format_date_for_display(item['created_date']),
+            'Activated Date': format_date_for_display(item['activated_date']),
+            'Cycle Time': f"{item['cycle_time_days']:.1f} days" if pd.notna(item['cycle_time_days']) else "N/A",
+            'Tags': item['tags'][:30] + "..." if item['tags'] and len(item['tags']) > 30 else (item['tags'] if item['tags'] else "None")
+        })
+    
+    # Display the comprehensive debug table
+    final_scope_debug_df = pd.DataFrame(final_scope_debug_data)
+    st.dataframe(final_scope_debug_df, use_container_width=True, hide_index=True)
+    
+    # Show final processing summary
+    items_counted_in_burndown = sum(1 for item in final_scope_debug_data if item['Was Counted in Burndown'] == "✅ Yes")
+    points_counted_in_burndown = sum(item['Story Points'] for item in final_scope_debug_data if item['Was Counted in Burndown'] == "✅ Yes")
+    items_not_counted = sum(1 for item in final_scope_debug_data if item['Was Counted in Burndown'] == "❌ No")
+    
+    st.write(f"**Final Loop Processing Summary:**")
+    st.write(f"- Total scope_items processed: {len(final_scope_debug_data)}")
+    st.write(f"- Items counted in burndown: {items_counted_in_burndown}")
+    st.write(f"- Story points counted in burndown: {points_counted_in_burndown}")
+    st.write(f"- Items NOT counted in burndown: {items_not_counted}")
+    st.write(f"- Items in COMPLETED_STATES: {len([item for item in final_scope_debug_data if item['State'] in COMPLETED_STATES])}")
+    st.write(f"- Items with valid completion dates: {len([item for item in final_scope_debug_data if item['Final Completion Date'] != 'None'])}")
+    
+    # Show breakdown by completion status
+    completed_items = [item for item in final_scope_debug_data if item['State'] in COMPLETED_STATES]
+    if completed_items:
+        st.write(f"**Completed Items Breakdown:**")
+        counted_completed = [item for item in completed_items if item['Was Counted in Burndown'] == "✅ Yes"]
+        not_counted_completed = [item for item in completed_items if item['Was Counted in Burndown'] == "❌ No"]
+        
+        st.write(f"- Completed items counted in burndown: {len(counted_completed)}")
+        st.write(f"- Completed items NOT counted in burndown: {len(not_counted_completed)}")
+        
+        if not_counted_completed:
+            st.write(f"**Reasons for completed items not being counted:**")
+            reasons = {}
+            for item in not_counted_completed:
+                reason = item['Final Logic']
+                if reason not in reasons:
+                    reasons[reason] = 0
+                reasons[reason] += 1
+            
+            for reason, count in reasons.items():
+                st.write(f"  - {reason}: {count} items")
+    
+    st.markdown("---")
+    
     burndown_df = pd.DataFrame(burndown_data)
+    
+    # Add burndown data table
+    st.subheader("📊 Burndown Data Table")
+    st.write("**Complete burndown dataset showing daily progress throughout the sprint:**")
+    
+    # Create a formatted version of burndown_df for display
+    display_burndown_df = burndown_df.copy()
+    
+    # Format the date column for better display
+    display_burndown_df['date'] = display_burndown_df['date'].apply(lambda x: x.strftime('%Y-%m-%d (%a)'))
+    
+    # Rename columns for better readability
+    display_burndown_df = display_burndown_df.rename(columns={
+        'date': 'Date',
+        'remaining_items': 'Remaining Items',
+        'remaining_points': 'Remaining Points',
+        'completed_items': 'Completed Items',
+        'completed_points': 'Completed Points',
+        'total_scope_items': 'Total Scope Items',
+        'total_scope_points': 'Total Scope Points'
+    })
+    
+    # Display the burndown data table
+    st.dataframe(
+        display_burndown_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Date": st.column_config.TextColumn("Date", width="medium"),
+            "Remaining Items": st.column_config.NumberColumn("Remaining Items", width="small"),
+            "Remaining Points": st.column_config.NumberColumn("Remaining Points", width="small"),
+            "Completed Items": st.column_config.NumberColumn("Completed Items", width="small"),
+            "Completed Points": st.column_config.NumberColumn("Completed Points", width="small"),
+            "Total Scope Items": st.column_config.NumberColumn("Total Scope Items", width="small"),
+            "Total Scope Points": st.column_config.NumberColumn("Total Scope Points", width="small")
+        }
+    )
+    
+    # Add summary information about the burndown data
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Sprint Days", len(burndown_df), delta=f"{start_date} to {end_date}")
+    
+    with col2:
+        final_remaining_items = burndown_df.iloc[-1]['remaining_items']
+        st.metric("Final Remaining Items", int(final_remaining_items))
+    
+    with col3:
+        final_remaining_points = burndown_df.iloc[-1]['remaining_points']
+        st.metric("Final Remaining Points", int(final_remaining_points))
+    
+    with col4:
+        total_completed_items = burndown_df.iloc[-1]['completed_items']
+        completion_pct = (total_completed_items / total_items * 100) if total_items > 0 else 0
+        st.metric("Items Completed", int(total_completed_items), delta=f"{completion_pct:.1f}%")
+    
+    # Add export functionality for the burndown data
+    if st.button("📥 Export Burndown Data to CSV"):
+        csv = burndown_df.to_csv(index=False)
+        st.download_button(
+            label="Download Burndown Data CSV",
+            data=csv,
+            file_name=f"sprint_burndown_data_{current_sprint}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    
+    st.markdown("---")  # Add separator before charts
     
     # Calculate key metrics for the burndown header
     current_remaining = burndown_df.iloc[-1]['remaining_items']
@@ -2368,71 +3039,433 @@ def render_burndown_tab(df, completed_df):
         projected_completion = end_date
         days_beyond_sprint = 0
     
-    # Create the main burndown chart as column chart with dynamic data
+    # Work Items Breakdown Table - show all items considered in the current iteration
+    st.subheader("📋 Work Items in Current Iteration - Detailed Breakdown")
+    
+    # Create comprehensive table with all relevant fields
+    breakdown_df = scope_items.copy()
+    
+    # Format the data for display
+    display_breakdown = breakdown_df[[
+        'id', 'title', 'type', 'state', 'assignee', 'story_points', 
+        'category', 'created_date', 'activated_date', 'resolved_date', 
+        'closed_date', 'cycle_time_days', 'tags', 'is_completed'
+    ]].copy()
+    
+    # Format dates for display
+    display_breakdown['created_date'] = display_breakdown['created_date'].apply(format_date_for_display)
+    display_breakdown['activated_date'] = display_breakdown['activated_date'].apply(format_date_for_display)
+    display_breakdown['resolved_date'] = display_breakdown['resolved_date'].apply(format_date_for_display)
+    display_breakdown['closed_date'] = display_breakdown['closed_date'].apply(format_date_for_display)
+    
+    # Format cycle time
+    display_breakdown['cycle_time_days'] = display_breakdown['cycle_time_days'].apply(
+        lambda x: f"{x:.1f} days" if pd.notna(x) else "N/A"
+    )
+    
+    # Truncate long titles for better display
+    display_breakdown['title'] = display_breakdown['title'].apply(
+        lambda x: x[:60] + "..." if len(x) > 60 else x
+    )
+    
+    # Format tags
+    display_breakdown['tags'] = display_breakdown['tags'].apply(
+        lambda x: x[:30] + "..." if x and len(x) > 30 else (x if x else "None")
+    )
+    
+    # Format completion status
+    display_breakdown['is_completed'] = display_breakdown['is_completed'].apply(
+        lambda x: "✅ Yes" if x else "⏳ No"
+    )
+    
+    # Rename columns for better display
+    display_breakdown.columns = [
+        'ID', 'Title', 'Type', 'State', 'Assignee', 'Story Points',
+        'Category', 'Created Date', 'Activated Date', 'Resolved Date',
+        'Closed Date', 'Cycle Time', 'Tags', 'Completed'
+    ]
+    
+    # Add summary information above the table
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("Total Items in Scope", len(scope_items))
+    
+    with col2:
+        completed_count = len(scope_items[scope_items['is_completed'] == True])
+        st.metric("Completed Items", completed_count, delta=f"{(completed_count/len(scope_items)*100):.1f}%")
+    
+    with col3:
+        remaining_count = len(scope_items[scope_items['is_completed'] == False])
+        st.metric("Remaining Items", remaining_count)
+    
+    with col4:
+        total_scope_points = scope_items['story_points'].sum()
+        st.metric("Total Story Points", int(total_scope_points))
+    
+    # Display the comprehensive table
+    st.dataframe(
+        display_breakdown,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "ID": st.column_config.NumberColumn("ID", width="small"),
+            "Title": st.column_config.TextColumn("Title", width="large"),
+            "Type": st.column_config.TextColumn("Type", width="small"),
+            "State": st.column_config.TextColumn("State", width="small"),
+            "Assignee": st.column_config.TextColumn("Assignee", width="medium"),
+            "Story Points": st.column_config.NumberColumn("Story Points", width="small"),
+            "Category": st.column_config.TextColumn("Category", width="small"),
+            "Created Date": st.column_config.TextColumn("Created Date", width="small"),
+            "Activated Date": st.column_config.TextColumn("Activated Date", width="small"),
+            "Resolved Date": st.column_config.TextColumn("Resolved Date", width="small"),
+            "Closed Date": st.column_config.TextColumn("Closed Date", width="small"),
+            "Cycle Time": st.column_config.TextColumn("Cycle Time", width="small"),
+            "Tags": st.column_config.TextColumn("Tags", width="medium"),
+            "Completed": st.column_config.TextColumn("Completed", width="small")
+        }
+    )
+    
+    # Add export functionality for the breakdown table
+    if st.button("📥 Export Work Items Breakdown to CSV"):
+        # Use original data with proper formatting for export
+        export_df = scope_items.copy()
+        export_df['created_date'] = export_df['created_date'].apply(format_date_for_display)
+        export_df['activated_date'] = export_df['activated_date'].apply(format_date_for_display)
+        export_df['resolved_date'] = export_df['resolved_date'].apply(format_date_for_display)
+        export_df['closed_date'] = export_df['closed_date'].apply(format_date_for_display)
+        
+        csv = export_df.to_csv(index=False)
+        st.download_button(
+            label="Download Work Items Breakdown CSV",
+            data=csv,
+            file_name=f"sprint_work_items_breakdown_{current_sprint}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    
+    st.markdown("---")  # Add separator before burndown charts
+    
+    # COMPREHENSIVE DEBUG SECTION FOR fig_burndown CHART DATA ANALYSIS
+    st.markdown("### 🔍 DEBUG: fig_burndown Chart Data Analysis")
+    
+    # Debug 1: Show burndown_df structure and data for work items chart
+    st.write(f"**fig_burndown chart data source**: burndown_df")
+    st.write(f"**burndown_df shape**: {burndown_df.shape}")
+    st.write(f"**burndown_df columns**: {list(burndown_df.columns)}")
+    
+    # Debug 2: Show complete data from burndown_df for work items
+    st.write("**Complete burndown_df data for fig_burndown (work items chart):**")
+    st.dataframe(burndown_df)
+    
+    # Debug 3: Show remaining_items specific data
+    if 'remaining_items' in burndown_df.columns:
+        st.write(f"**remaining_items data**: {burndown_df['remaining_items'].tolist()}")
+        st.write(f"**remaining_items stats**: min={burndown_df['remaining_items'].min()}, max={burndown_df['remaining_items'].max()}, mean={burndown_df['remaining_items'].mean():.2f}")
+        
+        # Check for the specific date mentioned in the issue (07/16)
+        july_16_data = burndown_df[burndown_df['date'] == datetime(2025, 7, 16).date()]
+        if not july_16_data.empty:
+            july_16_remaining = july_16_data['remaining_items'].iloc[0]
+            st.write(f"**07/16 remaining_items value**: {july_16_remaining} (should be 32 according to user)")
+        else:
+            st.write("**07/16 data**: Not found in burndown_df")
+    else:
+        st.error("❌ 'remaining_items' column not found in burndown_df!")
+    
+    # Debug 4: Show total_items variable used in chart
+    st.write(f"**total_items variable**: {total_items}")
+    st.write(f"**total_story_points variable**: {total_story_points}")
+    
+    # Debug 5: Show date column for work items chart
+    if 'date' in burndown_df.columns:
+        st.write(f"**date data**: {burndown_df['date'].tolist()}")
+        st.write(f"**date range**: {burndown_df['date'].min()} to {burndown_df['date'].max()}")
+        st.write(f"**date data types**: {[type(d) for d in burndown_df['date'].tolist()]}")
+    else:
+        st.error("❌ 'date' column not found in burndown_df!")
+    
+    # Debug 6: Check for any NaN or invalid values in work items data
+    if 'remaining_items' in burndown_df.columns:
+        nan_count = burndown_df['remaining_items'].isna().sum()
+        st.write(f"**remaining_items NaN count**: {nan_count}")
+        if nan_count > 0:
+            st.warning(f"⚠️ Found {nan_count} NaN values in remaining_items!")
+            st.write("**Rows with NaN remaining_items:**")
+            nan_rows = burndown_df[burndown_df['remaining_items'].isna()]
+            st.dataframe(nan_rows)
+    
+    # Debug 7: Show chart data preparation for fig_burndown
+    if all(col in burndown_df.columns for col in ['date', 'remaining_items']):
+        chart_data_items = {
+            'x_data': burndown_df['date'].tolist(),
+            'y_data_remaining_items': burndown_df['remaining_items'].tolist(),
+            'chart_type': 'Work Items Burndown (fig_burndown)'
+        }
+        st.write("**Chart data for fig_burndown (work items):**")
+        st.json(chart_data_items)
+        
+        # Show specific data points that will be plotted
+        st.write("**Key data points for fig_burndown:**")
+        for i, (date, remaining) in enumerate(zip(burndown_df['date'], burndown_df['remaining_items'])):
+            if i < 5 or date == datetime(2025, 7, 16).date():  # Show first 5 and July 16th
+                st.write(f"  - {date}: {remaining} remaining items")
+    else:
+        st.error("❌ Missing required columns for fig_burndown chart data!")
+    
+    # Debug 8: Show ideal burndown calculation for comparison
+    if len(burndown_df) > 0:
+        st.write("**Ideal burndown calculation for fig_burndown:**")
+        ideal_burndown_debug = []
+        for i, date in enumerate(burndown_df['date']):
+            progress = i / (len(burndown_df) - 1) if len(burndown_df) > 1 else 0
+            ideal_remaining = total_items * (1 - progress)
+            ideal_burndown_debug.append({
+                'date': date,
+                'progress': f"{progress:.2f}",
+                'ideal_remaining': f"{ideal_remaining:.1f}"
+            })
+        
+        # Show first few and July 16th
+        for item in ideal_burndown_debug[:5]:
+            st.write(f"  - {item['date']}: progress={item['progress']}, ideal_remaining={item['ideal_remaining']}")
+        
+        # Find July 16th in ideal burndown
+        july_16_ideal = next((item for item in ideal_burndown_debug if item['date'] == datetime(2025, 7, 16).date()), None)
+        if july_16_ideal:
+            st.write(f"  - **07/16 ideal**: progress={july_16_ideal['progress']}, ideal_remaining={july_16_ideal['ideal_remaining']}")
+    
+    # Debug 9: Compare actual vs expected for July 16th
+    if 'remaining_items' in burndown_df.columns:
+        july_16_data = burndown_df[burndown_df['date'] == datetime(2025, 7, 16).date()]
+        if not july_16_data.empty:
+            actual_remaining = july_16_data['remaining_items'].iloc[0]
+            st.write(f"**07/16 COMPARISON:**")
+            st.write(f"  - Actual remaining items: {actual_remaining}")
+            st.write(f"  - Expected (user reported): 32")
+            st.write(f"  - Match: {'✅ YES' if actual_remaining == 32 else '❌ NO'}")
+            
+            if actual_remaining != 32:
+                st.error(f"❌ MISMATCH: Chart will show {actual_remaining} but should show 32")
+            else:
+                st.success(f"✅ CORRECT: Chart will show {actual_remaining} as expected")
+    
+    st.markdown("---")  # Add separator before chart
+    
+    # Create the main burndown chart as line chart with dynamic data
     fig_burndown = go.Figure()
     
-    # Use actual burndown data from the DataFrame
-    # Add remaining work items as blue column bars
-    fig_burndown.add_trace(go.Bar(
-        x=burndown_df['date'],
-        y=burndown_df['remaining_items'],
-        name='Remaining Work Items',
-        marker_color='#4A90E2',  # Blue color as specified
-        opacity=0.8,
-        width=0.6  # Make bars slightly narrower for better appearance
-    ))
-    
-    # Add burndown line (gray) - showing trend of work completion
+    # Add actual burndown line (thick blue line showing remaining work items)
     fig_burndown.add_trace(go.Scatter(
         x=burndown_df['date'],
         y=burndown_df['remaining_items'],
         mode='lines+markers',
-        name='Burndown Line',
-        line=dict(color='#95A5A6', width=3),  # Gray color as specified
-        marker=dict(size=6, color='#95A5A6'),
-        yaxis='y'
+        name='Actual Burndown',
+        line=dict(color='#4A90E2', width=4),  # Thick blue line
+        marker=dict(size=8, color='#4A90E2', symbol='circle'),
+        hovertemplate='<b>Date:</b> %{x}<br><b>Remaining Items:</b> %{y}<extra></extra>'
     ))
     
-    # Add total scope line (orange) - showing initial planned work items
+    # Add ideal burndown line (dashed gray line) for reference
+    ideal_burndown = []
+    for i, date in enumerate(burndown_df['date']):
+        # Calculate ideal remaining items (linear burndown)
+        progress = i / (len(burndown_df) - 1) if len(burndown_df) > 1 else 0
+        ideal_remaining = total_items * (1 - progress)
+        ideal_burndown.append(ideal_remaining)
+    
     fig_burndown.add_trace(go.Scatter(
         x=burndown_df['date'],
-        y=burndown_df['total_scope_items'],
+        y=ideal_burndown,
         mode='lines',
-        name='Total Scope Line',
-        line=dict(color='#F39C12', width=3, dash='dash'),  # Orange color as specified
-        yaxis='y'
+        name='Ideal Burndown',
+        line=dict(color='#95A5A6', width=3, dash='dash'),  # Gray dashed line
+        hovertemplate='<b>Date:</b> %{x}<br><b>Ideal Remaining:</b> %{y:.0f}<extra></extra>'
     ))
     
-    # Update layout for column chart format
+    # Add total scope reference line (orange dashed line at the top)
+    fig_burndown.add_trace(go.Scatter(
+        x=burndown_df['date'],
+        y=[total_items] * len(burndown_df),
+        mode='lines',
+        name='Total Scope',
+        line=dict(color='#F39C12', width=2, dash='dot'),  # Orange dotted line
+        hovertemplate='<b>Total Scope:</b> %{y} items<extra></extra>'
+    ))
+    
+    # Add zero line for reference
+    fig_burndown.add_trace(go.Scatter(
+        x=burndown_df['date'],
+        y=[0] * len(burndown_df),
+        mode='lines',
+        name='Sprint Goal',
+        line=dict(color='#27AE60', width=2, dash='solid'),  # Green solid line
+        hovertemplate='<b>Sprint Goal:</b> 0 items remaining<extra></extra>'
+    ))
+    
+    # Update layout for enhanced line chart format
     fig_burndown.update_layout(
-        title="Sprint Burndown Chart - Work Items Progress",
+        title=dict(
+            text="Sprint Burndown Chart - Work Items Progress",
+            font=dict(size=18, color='#2c3e50'),
+            x=0.5
+        ),
         xaxis_title="Sprint Dates",
-        yaxis_title="Count of Work Items",
-        plot_bgcolor='rgba(0,0,0,0)',
+        yaxis_title="Remaining Work Items",
+        plot_bgcolor='rgba(248, 249, 250, 0.8)',  # Light background
         paper_bgcolor='rgba(0,0,0,0)',
-        font=dict(size=12),
+        font=dict(size=12, family="Arial, sans-serif"),
         height=500,
         showlegend=True,
         legend=dict(
             orientation="h",
             yanchor="bottom",
-            y=-0.25,
+            y=-0.3,
             xanchor="center",
-            x=0.5
+            x=0.5,
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="rgba(0,0,0,0.1)",
+            borderwidth=1
         ),
         xaxis=dict(
             tickangle=45,
-            tickformat='%d/%m/%Y',
-            title=f"Sprint Dates ({start_date} to {end_date})"
+            tickformat='%m/%d',
+            title=dict(
+                text=f"Sprint Dates ({start_date.strftime('%m/%d')} to {end_date.strftime('%m/%d')})",
+                font=dict(size=12, color='#2c3e50')
+            ),
+            gridcolor='rgba(0,0,0,0.1)',
+            showgrid=True
         ),
         yaxis=dict(
-            title="Count of Work Items",
+            title=dict(
+                text="Remaining Work Items",
+                font=dict(size=12, color='#2c3e50')
+            ),
             side='left',
-            range=[0, total_items + 2]  # Set range from 0 to slightly above total scope
+            range=[0, total_items + 2],  # Set range from 0 to slightly above total scope
+            gridcolor='rgba(0,0,0,0.1)',
+            showgrid=True,
+            zeroline=True,
+            zerolinecolor='rgba(39, 174, 96, 0.5)',  # Green zero line
+            zerolinewidth=2
         ),
         hovermode='x unified',
-        bargap=0.2  # Add gap between bars for better visibility
+        margin=dict(t=60, b=100, l=60, r=60)  # Better margins
     )
+    
+    # COMPREHENSIVE DEBUG SECTION FOR BURNDOWN CHART DATA ANALYSIS - MOVED ABOVE CHARTS
+    st.markdown("### 🔍 DEBUG: Burndown Chart Data Analysis")
+    
+    # Debug 1: Show burndown_df structure and data
+    st.write(f"**burndown_df shape**: {burndown_df.shape}")
+    st.write(f"**burndown_df columns**: {list(burndown_df.columns)}")
+    
+    # Debug 2: Show complete data from burndown_df
+    st.write("**Complete burndown_df data (all rows):**")
+    st.dataframe(burndown_df)
+    
+    # Debug 3: Show story points specific columns
+    if 'remaining_points' in burndown_df.columns:
+        st.write(f"**remaining_points data**: {burndown_df['remaining_points'].tolist()}")
+        st.write(f"**remaining_points stats**: min={burndown_df['remaining_points'].min()}, max={burndown_df['remaining_points'].max()}, mean={burndown_df['remaining_points'].mean():.2f}")
+    else:
+        st.error("❌ 'remaining_points' column not found in burndown_df!")
+    
+    if 'total_scope_points' in burndown_df.columns:
+        st.write(f"**total_scope_points data**: {burndown_df['total_scope_points'].tolist()}")
+        st.write(f"**total_scope_points unique values**: {burndown_df['total_scope_points'].unique()}")
+    else:
+        st.error("❌ 'total_scope_points' column not found in burndown_df!")
+    
+    # Debug 4: Show date column
+    if 'date' in burndown_df.columns:
+        st.write(f"**date data**: {burndown_df['date'].tolist()}")
+        st.write(f"**date range**: {burndown_df['date'].min()} to {burndown_df['date'].max()}")
+    else:
+        st.error("❌ 'date' column not found in burndown_df!")
+    
+    # Debug 5: Show total_story_points variable
+    st.write(f"**total_story_points variable**: {total_story_points}")
+    
+    # Debug 6: Show scope_items analysis
+    st.write(f"**scope_items shape**: {scope_items.shape}")
+    st.write(f"**scope_items story_points sum**: {scope_items['story_points'].sum()}")
+    st.write(f"**scope_items story_points breakdown**: {scope_items['story_points'].value_counts().sort_index().to_dict()}")
+    
+    # Debug 7: Check for any NaN or invalid values
+    if 'remaining_points' in burndown_df.columns:
+        nan_count = burndown_df['remaining_points'].isna().sum()
+        st.write(f"**remaining_points NaN count**: {nan_count}")
+        if nan_count > 0:
+            st.warning(f"⚠️ Found {nan_count} NaN values in remaining_points!")
+    
+    # Debug 8: Show processed items table with ALL columns
+    st.write("**Processed Items Table (scope_items) - ALL COLUMNS:**")
+    if not scope_items.empty:
+        # Show ALL columns from scope_items
+        processed_display_full = scope_items.copy()
+        
+        # Format dates for better display
+        date_columns = ['created_date', 'activated_date', 'resolved_date', 'closed_date']
+        for col in date_columns:
+            if col in processed_display_full.columns:
+                processed_display_full[col] = processed_display_full[col].apply(format_date_for_display)
+        
+        # Format cycle time
+        if 'cycle_time_days' in processed_display_full.columns:
+            processed_display_full['cycle_time_days'] = processed_display_full['cycle_time_days'].apply(
+                lambda x: f"{x:.1f}" if pd.notna(x) else "N/A"
+            )
+        
+        # Truncate long titles for better display
+        if 'title' in processed_display_full.columns:
+            processed_display_full['title'] = processed_display_full['title'].apply(
+                lambda x: x[:60] + "..." if len(x) > 60 else x
+            )
+        
+        # Format tags
+        if 'tags' in processed_display_full.columns:
+            processed_display_full['tags'] = processed_display_full['tags'].apply(
+                lambda x: x[:40] + "..." if x and len(x) > 40 else (x if x else "None")
+            )
+        
+        # Format completion status
+        if 'is_completed' in processed_display_full.columns:
+            processed_display_full['is_completed'] = processed_display_full['is_completed'].apply(
+                lambda x: "✅ Yes" if x else "⏳ No"
+            )
+        
+        st.dataframe(processed_display_full, use_container_width=True, hide_index=True)
+        
+        # Show summary stats
+        completed_count = len(scope_items[scope_items['is_completed'] == True])
+        remaining_count = len(scope_items[scope_items['is_completed'] == False])
+        total_points = scope_items['story_points'].sum()
+        completed_points = scope_items[scope_items['is_completed'] == True]['story_points'].sum()
+        
+        st.write(f"**Processed Items Summary:**")
+        st.write(f"- Total items processed: {len(scope_items)}")
+        st.write(f"- Completed items: {completed_count}")
+        st.write(f"- Remaining items: {remaining_count}")
+        st.write(f"- Total story points: {total_points}")
+        st.write(f"- Completed story points: {completed_points}")
+        st.write(f"- Remaining story points: {total_points - completed_points}")
+    else:
+        st.error("❌ No processed items (scope_items is empty)!")
+    
+    # Debug 9: Show chart data preparation
+    if all(col in burndown_df.columns for col in ['date', 'remaining_points', 'total_scope_points']):
+        chart_data = {
+            'x_data': burndown_df['date'].tolist(),
+            'y_data_remaining': burndown_df['remaining_points'].tolist(),
+            'y_data_total': burndown_df['total_scope_points'].tolist()
+        }
+        st.write("**Chart data for fig_burndown_points:**")
+        st.json(chart_data)
+    else:
+        st.error("❌ Missing required columns for chart data!")
+    
+    st.markdown("---")  # Add separator before charts
     
     # Display burndown charts side by side
     col1, col2 = st.columns(2)
@@ -2834,7 +3867,7 @@ def render_recent_changes_tab(df, pat_token):
             with col3:
                 st.markdown(f"""
                 **Timeline:**
-                - **Created**: {item['created_date'][:10] if item['created_date'] else 'N/A'}
+                - **Created**: {format_date_for_display(item['created_date'])}
                 - **Last Changed**: {item['state_change_datetime'].strftime('%Y-%m-%d') if pd.notna(item['state_change_datetime']) else 'N/A'}
                 - **Cycle Time**: {item['cycle_time_days']} days if pd.notna(item['cycle_time_days']) else 'N/A'
                 """)
